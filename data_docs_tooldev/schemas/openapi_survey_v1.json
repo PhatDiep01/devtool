@@ -1,0 +1,109 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Survey Management Enterprise Service API",
+    "version": "1.2.0",
+    "description": "Standardized RESTful specification for Survey Management Module handover."
+  },
+  "servers": [
+    {
+      "url": "https://api.internal.domain/api/v1",
+      "description": "Internal Microservice Gateway"
+    }
+  ],
+  "paths": {
+    "/surveys": {
+      "get": {
+        "summary": "Retrieve paginated list of surveys",
+        "parameters": [
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "pageSize", "in": "query", "schema": { "type": "integer", "default": 20 } },
+          { "name": "status", "in": "query", "schema": { "type": "string", "enum": ["Draft", "Published", "Expired", "Archived"] } },
+          { "name": "orgUnitId", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated surveys retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": { "type": "array", "items": { "$ref": "#/components/schemas/SurveyDto" } },
+                    "totalCount": { "type": "integer" },
+                    "page": { "type": "integer" },
+                    "pageSize": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create a new survey draft",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateSurveyRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Survey created successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SurveyDto" }
+              }
+            }
+          },
+          "400": { "description": "Validation error" }
+        }
+      }
+    },
+    "/surveys/{id}/publish": {
+      "put": {
+        "summary": "Publish a survey and dispatch SendGrid notification jobs",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "description": "Survey successfully published" },
+          "400": { "description": "Survey validation failed (missing questions or invalid date range)" },
+          "409": { "description": "Concurrency conflict" }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "SurveyDto": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "surveyCode": { "type": "string" },
+          "title": { "type": "string" },
+          "status": { "type": "string" },
+          "startTime": { "type": "string", "format": "date-time" },
+          "endTime": { "type": "string", "format": "date-time" },
+          "orgUnitId": { "type": "string" },
+          "isAnonymous": { "type": "boolean" },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "CreateSurveyRequest": {
+        "type": "object",
+        "required": ["title", "startTime", "endTime"],
+        "properties": {
+          "title": { "type": "string", "maxLength": 255 },
+          "description": { "type": "string" },
+          "startTime": { "type": "string", "format": "date-time" },
+          "endTime": { "type": "string", "format": "date-time" },
+          "isAnonymous": { "type": "boolean" }
+        }
+      }
+    }
+  }
+}

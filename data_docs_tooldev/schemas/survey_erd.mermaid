@@ -1,0 +1,58 @@
+erDiagram
+    SURVEY_CATEGORIES ||--o{ SURVEYS : categorizes
+    SURVEYS ||--|{ SURVEY_QUESTIONS : contains
+    SURVEY_QUESTIONS ||--o{ SURVEY_OPTIONS : offers
+    SURVEYS ||--o{ SURVEY_SUBMISSIONS : receives
+    SURVEY_SUBMISSIONS ||--|{ SURVEY_ANSWERS : includes
+    SURVEY_QUESTIONS ||--o{ SURVEY_ANSWERS : answers
+    SURVEY_OPTIONS ||--o{ SURVEY_ANSWERS : selects
+    SURVEYS ||--o{ SURVEY_AUDIT_LOGS : audits
+
+    SURVEYS {
+        bigint id PK
+        string survey_code UK
+        string title
+        string status
+        string org_unit_id
+        boolean is_anonymous
+        timestamp start_time
+        timestamp end_time
+        boolean is_deleted
+        int row_version
+    }
+
+    SURVEY_QUESTIONS {
+        bigint id PK
+        bigint survey_id FK
+        int question_order
+        string question_type
+        text content
+        boolean is_required
+        boolean is_deleted
+    }
+
+    SURVEY_OPTIONS {
+        bigint id PK
+        bigint question_id FK
+        int option_order
+        string option_label
+        numeric score_weight
+    }
+
+    SURVEY_SUBMISSIONS {
+        bigint id PK
+        bigint survey_id FK
+        string participant_token
+        string user_id
+        timestamp submitted_at
+        boolean is_valid
+    }
+
+    SURVEY_ANSWERS {
+        bigint id PK
+        bigint submission_id FK
+        bigint question_id FK
+        bigint selected_option_id FK
+        text text_answer
+        int numeric_rating
+    }
