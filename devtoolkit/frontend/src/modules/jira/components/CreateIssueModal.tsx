@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { 
   X, 
   Plus, 
@@ -341,11 +342,10 @@ export const CreateIssueModal: React.FC<CreateIssueModalProps> = ({
     }));
   }, [priorities]);
 
-  return (
+  return typeof document !== 'undefined' ? createPortal(
     <>
       <div 
-        className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-background/80 backdrop-blur-sm animate-in fade-in duration-200"
-        onClick={handleRequestClose}
+        className="fixed inset-0 z-[70] flex items-center justify-center p-3 sm:p-4 bg-background/80 backdrop-blur-sm animate-in fade-in duration-200"
       >
         <div 
           className="bg-card border border-border rounded-3xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[92dvh] animate-in zoom-in-95 duration-150"
@@ -679,6 +679,7 @@ export const CreateIssueModal: React.FC<CreateIssueModalProps> = ({
           </div>
         </div>
       )}
-    </>
-  );
+    </>,
+    document.body
+  ) : null;
 };

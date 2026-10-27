@@ -25,10 +25,13 @@ import {
   Bug,
   AlignLeft,
   ArrowLeftRight,
-  StickyNote
+  StickyNote,
+  LogIn,
+  User
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useJiraAuthStore } from '../../stores/jira-auth.store';
+import { JiraAvatar } from '../../modules/jira/components/JiraAvatar';
 
 export interface NavSubItem {
   id: string;
@@ -70,14 +73,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { isAuthenticated: isJiraAuthenticated } = useJiraAuthStore();
+  const { isAuthenticated: isJiraAuthenticated, user: jiraUser } = useJiraAuthStore();
 
-  // Accordion state for expandable Level 1 menu groups
+  // Accordion state for expandable Level 1 menu groups (mặc định chỉ mở menu cha đầu tiên: Tài Liệu Đặc Tả - docs)
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() => ({
-    docs: true,
-    jira: true,
-    'dev-tools': location.pathname.startsWith('/tools'),
-    settings: location.pathname.startsWith('/settings'),
+    docs: !location.pathname.startsWith('/settings'),
+    jira: false,
+    'dev-tools': false,
   }));
 
   const toggleGroup = (groupId: string) => {
@@ -221,30 +223,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
           badge: 'Soon'
         }
       ]
-    },
-    {
-      id: 'settings',
-      title: 'Cấu Hình & Hệ Thống',
-      desc: 'System config & storage',
-      path: '/settings',
-      icon: Settings,
-      children: [
-        {
-          id: 'settings-jira',
-          title: 'Cài Đặt Chung & Jira',
-          desc: 'Cấu hình Jira & giao diện',
-          path: '/settings',
-          icon: Sliders,
-          exact: true
-        },
-        {
-          id: 'settings-storage',
-          title: 'Bộ Nhớ & Đồng Bộ Disk',
-          desc: 'Quản trị file & database',
-          path: '/settings#storage',
-          icon: HardDrive
-        }
-      ]
     }
   ];
 
@@ -261,25 +239,28 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   // Check if parent item or any of its children is active
   const isParentActive = (item: NavItem) => {
+    if (item.children && item.children.length > 0) {
+      return item.children.some(child => isChildActive(child));
+    }
     if (item.exact && item.path) {
       return location.pathname === item.path;
     }
-    if (item.path && location.pathname.startsWith(item.path)) {
-      return true;
-    }
-    if (item.children) {
-      return item.children.some(child => isChildActive(child));
+    if (item.path) {
+      return location.pathname.startsWith(item.path);
     }
     return false;
   };
 
-  // Auto-expand group if current path matches one of its children
+  // Auto-expand group of current path and collapse other groups so only active group is open
   useEffect(() => {
-    navItems.forEach(item => {
-      if (item.children && isParentActive(item)) {
-        setOpenGroups(prev => prev[item.id] ? prev : { ...prev, [item.id]: true });
-      }
-    });
+    const activeItem = navItems.find(item => item.children && isParentActive(item));
+    if (activeItem) {
+      setOpenGroups({ [activeItem.id]: true });
+    } else if (location.pathname.startsWith('/settings')) {
+      setOpenGroups({});
+    } else {
+      setOpenGroups({ docs: true });
+    }
   }, [location.pathname]);
 
   return (
@@ -605,27 +586,96 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <Settings className="w-5 h-5" />
               </NavLink>
 
-              <div 
-                className="w-8 h-8 rounded-full bg-accent border border-border flex items-center justify-center text-[11px] font-bold text-foreground"
-                title="Môi trường phát triển cục bộ"
-              >
-                DEV
-              </div>
+              {isJiraAuthenticated && jiraUser ? (
+                <div 
+                  onClick={() => navigate('/jira')}
+                  className="relative cursor-pointer group p-0.5"
+                  title={`Jira: ${jiraUser.displayName} (${jiraUser.emailAddress || 'Connected'})`}
+                >
+                  <JiraAvatar 
+                    avatarUrl={jiraUser.avatarUrl} 
+                    displayName={jiraUser.displayName} 
+                    className="w-8 h-8 rounded-full border border-border/80 group-hover:border-primary transition" 
+                  />
+                  <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-background" />
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => navigate('/jira')}
+                  title="Đăng nhập Jira"
+                  className="w-8 h-8 rounded-full bg-accent hover:bg-primary/10 text-muted-foreground hover:text-primary border border-border flex items-center justify-center transition relative"
+                >
+                  <LogIn className="w-3.5 h-3.5" />
+                  <span className="absolute bottom-0 right-0 w-2 h-2 rounded-full bg-amber-500" />
+                </button>
+              )}
             </div>
           ) : (
             <div className="flex flex-col gap-2 w-full px-1">
-              <div className="p-2 rounded-xl bg-accent/40 border border-border/50 flex items-center justify-between">
-                <div className="flex items-center gap-2 min-w-0">
-                  <div className="w-7 h-7 rounded-full bg-primary/20 text-primary flex items-center justify-center font-bold text-xs shrink-0">
-                    DEV
+              <NavLink
+                to="/settings"
+                title="Cài đặt hệ thống"
+                className={clsx(
+                  'flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all',
+                  location.pathname === '/settings'
+                    ? 'bg-primary/10 text-primary font-bold shadow-xs border border-primary/20'
+                    : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'
+                )}
+              >
+                <Settings className={clsx('w-4 h-4 shrink-0', location.pathname === '/settings' ? 'text-primary' : 'text-muted-foreground')} />
+                <span className="truncate">Cài Đặt & Cấu Hình</span>
+              </NavLink>
+
+              {isJiraAuthenticated && jiraUser ? (
+                <div 
+                  onClick={() => navigate('/jira')}
+                  className="p-2 rounded-xl bg-accent/40 border border-border/60 hover:bg-accent/80 hover:border-primary/40 flex items-center justify-between cursor-pointer transition group"
+                  title="Xem trang Jira Dashboard & Quản lý phiên làm việc"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <JiraAvatar 
+                      avatarUrl={jiraUser.avatarUrl} 
+                      displayName={jiraUser.displayName} 
+                      className="w-7 h-7" 
+                    />
+                    <div className="min-w-0">
+                      <div className="text-xs font-semibold text-foreground truncate group-hover:text-primary transition">
+                        {jiraUser.displayName}
+                      </div>
+                      <div className="text-[10px] text-muted-foreground truncate">
+                        {jiraUser.emailAddress || 'Jira Connected'}
+                      </div>
+                    </div>
                   </div>
-                  <div className="min-w-0">
-                    <div className="text-xs font-semibold truncate">Local Workspace</div>
-                    <div className="text-[10px] text-muted-foreground truncate">Disk Storage Ready</div>
-                  </div>
+                  <span className="text-[10px] font-mono text-emerald-500 font-bold bg-emerald-500/10 px-2 py-0.5 rounded-full shrink-0">
+                    Connected
+                  </span>
                 </div>
-                <span className="text-[10px] font-mono text-emerald-500 font-bold bg-emerald-500/10 px-2 py-0.5 rounded-full shrink-0">Active</span>
-              </div>
+              ) : (
+                <div 
+                  onClick={() => navigate('/jira')}
+                  className="p-2 rounded-xl bg-amber-500/5 border border-amber-500/20 hover:bg-amber-500/10 hover:border-amber-500/40 flex items-center justify-between cursor-pointer transition group"
+                  title="Nhấp để đăng nhập tài khoản Jira"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="w-7 h-7 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+                      <LogIn className="w-3.5 h-3.5" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-xs font-semibold text-foreground truncate group-hover:text-amber-600 dark:group-hover:text-amber-400 transition">
+                        Đăng Nhập Jira
+                      </div>
+                      <div className="text-[10px] text-muted-foreground truncate">
+                        Chưa kết nối Jira
+                      </div>
+                    </div>
+                  </div>
+                  <span className="text-[10px] font-semibold text-amber-600 dark:text-amber-400 bg-amber-500/15 px-2 py-0.5 rounded-full shrink-0">
+                    Login
+                  </span>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -692,16 +742,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     }
                   }}
                   className={clsx(
-                    'flex items-center justify-between px-3 py-2.5 rounded-xl transition-all cursor-pointer',
+                    'flex items-center justify-between px-3 py-2.5 rounded-xl transition-all cursor-pointer select-none',
                     parentActive
-                      ? 'bg-accent/80 text-foreground font-bold'
-                      : 'text-foreground hover:bg-accent'
+                      ? 'bg-accent/80 text-foreground font-bold shadow-sm'
+                      : 'text-muted-foreground hover:bg-accent/40 active:bg-accent/60 hover:text-foreground'
                   )}
                 >
                   <div className="flex items-center gap-3 min-w-0">
                     <Icon className={clsx('w-5 h-5 shrink-0', parentActive ? 'text-primary' : 'text-muted-foreground')} />
                     <div className="min-w-0">
-                      <div className="text-sm font-semibold truncate">{item.title}</div>
+                      <div className={clsx('text-sm truncate', parentActive ? 'font-bold text-foreground' : 'font-semibold text-foreground/85')}>
+                        {item.title}
+                      </div>
                       {item.desc && <div className="text-[11px] text-muted-foreground truncate">{item.desc}</div>}
                     </div>
                   </div>
@@ -786,23 +838,67 @@ export const Sidebar: React.FC<SidebarProps> = ({
             className={clsx(
               'flex items-center gap-3 px-3.5 py-2.5 rounded-xl transition-all',
               location.pathname === '/settings'
-                ? 'bg-primary/10 text-primary font-bold'
+                ? 'bg-primary/10 text-primary font-bold shadow-sm'
                 : 'text-foreground hover:bg-accent'
             )}
           >
-            <Settings className="w-5 h-5 text-muted-foreground" />
+            <Settings className={clsx('w-5 h-5 shrink-0', location.pathname === '/settings' ? 'text-primary' : 'text-muted-foreground')} />
             <span className="text-sm font-semibold">Cài Đặt & Cấu Hình</span>
           </NavLink>
 
-          <div className="bg-muted/40 p-3 rounded-xl border border-border/40 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div className="w-7 h-7 rounded-full bg-primary/20 text-primary flex items-center justify-center font-bold text-xs">
-                DEV
+          {isJiraAuthenticated && jiraUser ? (
+            <div 
+              onClick={() => {
+                onCloseMobile?.();
+                navigate('/jira');
+              }}
+              className="bg-muted/40 p-2.5 rounded-xl border border-border/60 hover:bg-accent flex items-center justify-between cursor-pointer transition"
+            >
+              <div className="flex items-center gap-2.5 min-w-0">
+                <JiraAvatar 
+                  avatarUrl={jiraUser.avatarUrl} 
+                  displayName={jiraUser.displayName} 
+                  className="w-7 h-7" 
+                />
+                <div className="min-w-0">
+                  <div className="text-xs font-semibold text-foreground truncate">
+                    {jiraUser.displayName}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground truncate">
+                    {jiraUser.emailAddress || 'Jira Connected'}
+                  </div>
+                </div>
               </div>
-              <span className="text-xs font-semibold">Local Workspace</span>
+              <span className="text-[11px] font-mono text-emerald-500 font-bold bg-emerald-500/10 px-2 py-0.5 rounded-full shrink-0">
+                Connected
+              </span>
             </div>
-            <span className="text-[11px] font-mono text-emerald-500 font-bold bg-emerald-500/10 px-2 py-0.5 rounded-full">Active</span>
-          </div>
+          ) : (
+            <div 
+              onClick={() => {
+                onCloseMobile?.();
+                navigate('/jira');
+              }}
+              className="bg-amber-500/5 p-2.5 rounded-xl border border-amber-500/20 hover:bg-amber-500/10 flex items-center justify-between cursor-pointer transition"
+            >
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-7 h-7 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+                  <LogIn className="w-3.5 h-3.5" />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-xs font-semibold text-foreground truncate">
+                    Đăng Nhập Jira
+                  </div>
+                  <div className="text-[10px] text-muted-foreground truncate">
+                    Chưa kết nối Jira
+                  </div>
+                </div>
+              </div>
+              <span className="text-[11px] font-semibold text-amber-600 dark:text-amber-400 bg-amber-500/15 px-2 py-0.5 rounded-full shrink-0">
+                Login
+              </span>
+            </div>
+          )}
         </div>
       </aside>
     </>

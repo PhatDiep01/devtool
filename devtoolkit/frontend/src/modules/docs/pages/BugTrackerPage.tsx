@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { 
   Bug, 
   Plus, 
@@ -29,12 +30,22 @@ import {
   Sparkles,
   Link as LinkIcon,
   User,
-  ShieldAlert
+  ShieldAlert,
+  ClipboardPaste
 } from 'lucide-react';
 import { bugsApi, resolveApiUrl } from '../../../services/api';
 import { BugItem, BugStats, BugType, BugStatus, BugSeverity, BugAttachment } from '../../../types';
 import { SearchableSelect, SelectOption } from '../../../components/ui';
-import { toast } from 'react-hot-toast';
+import toast from 'react-hot-toast';
+import { AnnotationModal, AnnotationOverlayView } from '../components/BugAnnotation';
+import { generateMarkdownSummary } from '../components/BugAnnotation/mathUtils';
+import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd';
+
+const KANBAN_COLUMNS: { id: BugStatus; label: string; dotColor: string }[] = [
+  { id: 'todo', label: 'Chưa Fix', dotColor: 'bg-amber-500' },
+  { id: 'in_progress', label: 'Đang Fix', dotColor: 'bg-blue-500 animate-pulse' },
+  { id: 'resolved', label: 'Đã Fix', dotColor: 'bg-emerald-500' }
+];
 
 const statusFilterOptions: SelectOption<string>[] = [
   { value: 'all', label: 'Tất cả trạng thái' },
@@ -57,6 +68,12 @@ const severityFilterOptions: SelectOption<string>[] = [
   { value: 'low', label: 'Thấp', badge: 'Low', badgeColor: 'bg-slate-500/15 text-slate-600 dark:text-slate-400' },
 ];
 
+const annotationFilterOptions: SelectOption<string>[] = [
+  { value: 'all', label: 'Tất cả bug (Đánh dấu)' },
+  { value: 'yes', label: 'Có ảnh đánh dấu', badge: 'Có đánh dấu', badgeColor: 'bg-primary/15 text-primary' },
+  { value: 'no', label: 'Chưa đánh dấu', badge: 'Chưa đánh dấu', badgeColor: 'bg-muted text-muted-foreground' },
+];
+
 const formStatusOptions: SelectOption<BugStatus>[] = [
   { value: 'todo', label: 'Chưa fix (Todo)' },
   { value: 'in_progress', label: 'Đang fix (In Progress)' },
@@ -69,6 +86,19 @@ const formSeverityOptions: SelectOption<BugSeverity>[] = [
   { value: 'medium', label: 'Trung bình (Medium)', badge: 'Medium', badgeColor: 'bg-yellow-500/15 text-yellow-600 dark:text-yellow-400' },
   { value: 'low', label: 'Thấp (Low)', badge: 'Low', badgeColor: 'bg-slate-500/15 text-slate-600 dark:text-slate-400' },
 ];
+
+export interface FormAttachmentItem {
+  id: string;
+  originalName: string;
+  size: number;
+  mimeType: string;
+  isImage: boolean;
+  url?: string;
+  filename?: string;
+  file?: File;
+  previewUrl?: string;
+  isPending?: boolean;
+}
 
 export const BugTrackerPage: React.FC = () => {
   const [bugs, setBugs] = useState<BugItem[]>([]);
@@ -88,6 +118,7 @@ export const BugTrackerPage: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [typeFilter, setTypeFilter] = useState<string>('all');
   const [severityFilter, setSeverityFilter] = useState<string>('all');
+  const [annotationFilter, setAnnotationFilter] = useState<string>('all');
   const [viewMode, setViewMode] = useState<'board' | 'list'>('board');
 
   // Modal states
@@ -96,8 +127,18 @@ export const BugTrackerPage: React.FC = () => {
   const [editingBug, setEditingBug] = useState<BugItem | null>(null);
   const [selectedBug, setSelectedBug] = useState<BugItem | null>(null);
 
+  // Bug Annotation Modal state
+  const [annotationModalState, setAnnotationModalState] = useState<{
+    isOpen: boolean;
+    bug: BugItem | null;
+    imageId?: string;
+  }>({
+    isOpen: false,
+    bug: null,
+  });
+
   // Image preview lightbox
-  const [previewImage, setPreviewImage] = useState<{ url: string; title: string } | null>(null);
+  const [previewImage, setPreviewImage] = useState<{ url: string; title: string; imageId?: string } | null>(null);
 
   // Form inputs
   const [formTitle, setFormTitle] = useState('');
@@ -110,15 +151,25 @@ export const BugTrackerPage: React.FC = () => {
   const [formFixSolution, setFormFixSolution] = useState('');
   const [formCreatedBy, setFormCreatedBy] = useState('QA/QC');
   const [formAssignedTo, setFormAssignedTo] = useState('');
-  const [formAttachments, setFormAttachments] = useState<BugAttachment[]>([]);
-  const [isUploading, setIsUploading] = useState(false);
+  const [formAttachments, setFormAttachments] = useState<FormAttachmentItem[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     loadBugs();
-  }, [statusFilter, typeFilter, severityFilter]);
+  }, [statusFilter, typeFilter, severityFilter, annotationFilter]);
+
+  // Prevent background scroll when any modal or lightbox is open
+  useEffect(() => {
+    if (isFormModalOpen || isDetailModalOpen || previewImage || annotationModalState.isOpen) {
+      const originalOverflow = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+      return () => {
+        document.body.style.overflow = originalOverflow;
+      };
+    }
+  }, [isFormModalOpen, isDetailModalOpen, !!previewImage, annotationModalState.isOpen]);
 
   const loadBugs = async () => {
     setLoading(true);
@@ -127,29 +178,71 @@ export const BugTrackerPage: React.FC = () => {
         search: searchQuery,
         status: statusFilter,
         type: typeFilter,
-        severity: severityFilter
+        severity: severityFilter,
+        has_annotations: annotationFilter !== 'all' ? annotationFilter : undefined
       });
-      setBugs(res.data.bugs || []);
-      setStats(res.data.stats || {
+      const loadedBugs = Array.isArray(res.data?.bugs) ? res.data.bugs : [];
+      setBugs(loadedBugs);
+      setSelectedBug(prev => prev ? (loadedBugs.find(b => b.id === prev.id) || prev) : null);
+      setStats(res.data?.stats || {
         total: 0,
         todo: 0,
         in_progress: 0,
         resolved: 0,
         fe_count: 0,
         be_count: 0,
-        both_count: 0
+        both_count: 0,
+        annotated_count: 0
       });
     } catch (err) {
       console.error(err);
       toast.error('Không thể tải danh sách bug');
+      setBugs([]);
     } finally {
       setLoading(false);
     }
   };
 
+  const handleCopyBugReportMarkdown = (bug: BugItem) => {
+    let md = `# [BUG #${bug.id}] ${bug.title}\n\n`;
+    md += `- **Mã US:** ${bug.us_key || 'Không có'}\n`;
+    if (bug.us_link) md += `- **Link US:** ${bug.us_link}\n`;
+    md += `- **Loại:** ${bug.type} | **Mức độ:** ${bug.severity} | **Trạng thái:** ${getStatusLabel(bug.status)}\n`;
+    md += `- **Người tạo:** ${bug.created_by || 'QA/QC'} | **Phụ trách:** ${bug.assigned_to || 'Chưa gán'}\n\n`;
+    md += `## Mô tả lỗi & Các bước tái hiện\n${bug.description || '_Không có mô tả_'}\n\n`;
+    if (bug.fix_solution) {
+      md += `## Hướng dẫn / Giải pháp fix\n${bug.fix_solution}\n\n`;
+    }
+    const images = (bug.attachments || []).filter(a => a.isImage);
+    if (images.length > 0) {
+      md += `## Hình ảnh đính kèm & Điểm đánh dấu (${images.length})\n\n`;
+      for (const img of images) {
+        const imgKey = img.id || img.filename;
+        const imgAnnotations = bug.annotations?.[imgKey]?.annotations || [];
+        md += generateMarkdownSummary(bug.title, bug.us_key, img.originalName, imgAnnotations) + '\n\n';
+      }
+    }
+    navigator.clipboard.writeText(md)
+      .then(() => toast.success('Đã sao chép toàn bộ báo cáo Markdown kèm bảng đánh dấu!'))
+      .catch(() => toast.error('Không thể sao chép Markdown'));
+  };
+
+  const safeBugs = useMemo(() => Array.isArray(bugs) ? bugs : [], [bugs]);
+
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     loadBugs();
+  };
+
+  const closeFormModal = () => {
+    // Revoke any temporary object URLs created for preview
+    formAttachments.forEach(att => {
+      if (att.isPending && att.previewUrl) {
+        try { URL.revokeObjectURL(att.previewUrl); } catch {}
+      }
+    });
+    setFormAttachments([]);
+    setIsFormModalOpen(false);
   };
 
   const openCreateModal = () => {
@@ -180,7 +273,7 @@ export const BugTrackerPage: React.FC = () => {
     setFormFixSolution(bug.fix_solution || '');
     setFormCreatedBy(bug.created_by || 'QA/QC');
     setFormAssignedTo(bug.assigned_to || '');
-    setFormAttachments(bug.attachments || []);
+    setFormAttachments((bug.attachments || []).map(a => ({ ...a, isPending: false })));
     setIsFormModalOpen(true);
   };
 
@@ -189,32 +282,171 @@ export const BugTrackerPage: React.FC = () => {
     setIsDetailModalOpen(true);
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
+  const [isDragOver, setIsDragOver] = useState(false);
+
+  // Add files to local form state with client-side preview.
+  // CRITICAL: Files are NOT uploaded to server until user clicks "Ghi Nhận Bug" / "Lưu Thay Đổi".
+  const addFilesToForm = (files: FileList | File[]) => {
     if (!files || files.length === 0) return;
 
-    setIsUploading(true);
-    try {
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        const formData = new FormData();
-        formData.append('file', file);
+    const newItems: FormAttachmentItem[] = [];
+    for (let i = 0; i < files.length; i++) {
+      let file = files[i];
 
-        const res = await bugsApi.upload(formData);
-        const uploaded = res.data;
-        setFormAttachments(prev => [...prev, uploaded]);
+      // Format filename for pasted images or blobs missing extensions
+      if (!file.name || file.name === 'blob' || file.name === 'image' || !file.name.includes('.')) {
+        const ext = file.type?.split('/')[1]?.replace('jpeg', 'jpg') || 'png';
+        file = new File([file], `screenshot_${Date.now()}_${i + 1}.${ext}`, {
+          type: file.type || `image/${ext}`
+        });
       }
-      toast.success(`Đã tải lên ${files.length} tệp`);
+
+      const isImg = file.type.startsWith('image/');
+      const previewUrl = isImg ? URL.createObjectURL(file) : '';
+
+      newItems.push({
+        id: `pending_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        originalName: file.name,
+        size: file.size,
+        mimeType: file.type || 'application/octet-stream',
+        isImage: isImg,
+        file,
+        previewUrl,
+        isPending: true
+      });
+    }
+
+    setFormAttachments(prev => [...prev, ...newItems]);
+    toast.success(`Đã thêm ${newItems.length} tệp (chờ lưu)`);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const addFilesRef = useRef(addFilesToForm);
+  addFilesRef.current = addFilesToForm;
+
+  const extractImagesFromDataTransfer = (dt: DataTransfer | null): File[] => {
+    if (!dt) return [];
+    const images: File[] = [];
+
+    // 1. Check items first (primary for clipboard)
+    if (dt.items && dt.items.length > 0) {
+      for (let i = 0; i < dt.items.length; i++) {
+        const item = dt.items[i];
+        if (item.type.startsWith('image/')) {
+          const file = item.getAsFile();
+          if (file) {
+            const ext = item.type.split('/')[1]?.replace('jpeg', 'jpg') || 'png';
+            const fixedFile = (!file.name || file.name === 'blob' || !file.name.includes('.'))
+              ? new File([file], `screenshot_${Date.now()}_${images.length + 1}.${ext}`, { type: item.type })
+              : file;
+            images.push(fixedFile);
+          }
+        }
+      }
+    }
+
+    // 2. Fallback to files
+    if (images.length === 0 && dt.files && dt.files.length > 0) {
+      for (let i = 0; i < dt.files.length; i++) {
+        const file = dt.files[i];
+        if (file.type.startsWith('image/')) {
+          images.push(file);
+        }
+      }
+    }
+
+    return images;
+  };
+
+  // Global paste handler when Form Modal is active
+  useEffect(() => {
+    if (!isFormModalOpen) return;
+
+    const handleWindowPaste = (e: ClipboardEvent) => {
+      const images = extractImagesFromDataTransfer(e.clipboardData);
+      if (images.length > 0) {
+        e.preventDefault();
+        addFilesRef.current(images);
+      }
+    };
+
+    window.addEventListener('paste', handleWindowPaste);
+    return () => {
+      window.removeEventListener('paste', handleWindowPaste);
+    };
+  }, [isFormModalOpen]);
+
+  const handlePasteButtonClick = async () => {
+    try {
+      if (!navigator.clipboard?.read) {
+        toast('Hãy bấm phím Ctrl + V để dán hình ảnh trực tiếp.', { icon: '📋' });
+        return;
+      }
+      const clipboardItems = await navigator.clipboard.read();
+      const files: File[] = [];
+
+      for (let i = 0; i < clipboardItems.length; i++) {
+        const item = clipboardItems[i];
+        for (const type of item.types) {
+          if (type.startsWith('image/')) {
+            const blob = await item.getType(type);
+            const ext = type.split('/')[1]?.replace('jpeg', 'jpg') || 'png';
+            const file = new File([blob], `screenshot_${Date.now()}_${files.length + 1}.${ext}`, { type });
+            files.push(file);
+          }
+        }
+      }
+
+      if (files.length > 0) {
+        addFilesToForm(files);
+      } else {
+        toast('Không tìm thấy hình ảnh trong clipboard. Vui lòng chụp hoặc sao chép ảnh trước rồi bấm Ctrl + V.', {
+          icon: '⚠️'
+        });
+      }
     } catch (err: any) {
-      toast.error('Tải tệp lên thất bại: ' + (err.response?.data?.error || err.message));
-    } finally {
-      setIsUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
+      console.warn('Clipboard read error:', err);
+      toast('Không thể đọc tự động từ clipboard (quyền bị từ chối). Vui lòng nhấn tổ hợp phím Ctrl + V để dán ảnh.', {
+        icon: '📋'
+      });
+    }
+  };
+
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      addFilesToForm(e.target.files);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      addFilesToForm(e.dataTransfer.files);
     }
   };
 
   const removeAttachment = (id: string) => {
-    setFormAttachments(prev => prev.filter(a => a.id !== id));
+    setFormAttachments(prev => {
+      const target = prev.find(a => a.id === id);
+      if (target?.isPending && target.previewUrl) {
+        try { URL.revokeObjectURL(target.previewUrl); } catch {}
+      }
+      return prev.filter(a => a.id !== id);
+    });
   };
 
   const handleSubmitForm = async (e: React.FormEvent) => {
@@ -226,6 +458,39 @@ export const BugTrackerPage: React.FC = () => {
 
     setIsSubmitting(true);
     try {
+      // 1. Separate already saved attachments vs pending new attachments
+      const savedAttachments: BugAttachment[] = [];
+      const pendingAttachments: FormAttachmentItem[] = [];
+
+      for (const item of formAttachments) {
+        if (item.isPending && item.file) {
+          pendingAttachments.push(item);
+        } else if (item.url && item.filename) {
+          savedAttachments.push({
+            id: item.id,
+            url: item.url,
+            filename: item.filename,
+            originalName: item.originalName,
+            size: item.size,
+            mimeType: item.mimeType,
+            isImage: item.isImage
+          });
+        }
+      }
+
+      // 2. ONLY upload pending attachments to server when the form is submitted
+      const uploadedAttachments: BugAttachment[] = [];
+      for (let i = 0; i < pendingAttachments.length; i++) {
+        const pending = pendingAttachments[i];
+        const formData = new FormData();
+        formData.append('file', pending.file!);
+
+        const res = await bugsApi.upload(formData);
+        uploadedAttachments.push(res.data);
+      }
+
+      const finalAttachments = [...savedAttachments, ...uploadedAttachments];
+
       const payload = {
         title: formTitle.trim(),
         us_key: formUsKey.trim() || null,
@@ -235,7 +500,7 @@ export const BugTrackerPage: React.FC = () => {
         severity: formSeverity,
         description: formDescription,
         fix_solution: formFixSolution,
-        attachments: formAttachments,
+        attachments: finalAttachments,
         created_by: formCreatedBy.trim() || null,
         assigned_to: formAssignedTo.trim() || null
       };
@@ -247,6 +512,13 @@ export const BugTrackerPage: React.FC = () => {
         await bugsApi.create(payload);
         toast.success('Đã ghi nhận bug mới thành công!');
       }
+
+      // Revoke temporary preview object URLs
+      pendingAttachments.forEach(p => {
+        if (p.previewUrl) {
+          try { URL.revokeObjectURL(p.previewUrl); } catch {}
+        }
+      });
 
       setIsFormModalOpen(false);
       loadBugs();
@@ -268,6 +540,45 @@ export const BugTrackerPage: React.FC = () => {
       }
     } catch (err: any) {
       toast.error('Không thể đổi trạng thái');
+    }
+  };
+
+  const onDragEnd = async (result: DropResult) => {
+    const { destination, source, draggableId } = result;
+    if (!destination) return;
+    if (destination.droppableId === source.droppableId && destination.index === source.index) return;
+
+    const bugId = Number(draggableId);
+    const targetStatus = destination.droppableId as BugStatus;
+
+    if (!['todo', 'in_progress', 'resolved'].includes(targetStatus)) return;
+
+    if (destination.droppableId !== source.droppableId) {
+      // Optimistic UI update
+      setBugs(prev => prev.map(b => b.id === bugId ? { ...b, status: targetStatus } : b));
+      if (selectedBug && selectedBug.id === bugId) {
+        setSelectedBug(prev => prev ? { ...prev, status: targetStatus } : null);
+      }
+
+      try {
+        await bugsApi.updateStatus(bugId, targetStatus);
+        toast.success(`Đã chuyển bug #${bugId} sang "${getStatusLabel(targetStatus)}"`);
+        loadBugs();
+      } catch (err: any) {
+        toast.error('Không thể đổi trạng thái bug');
+        loadBugs();
+      }
+    } else {
+      // Reorder locally within same column
+      const columnBugs = safeBugs.filter(b => b.status === source.droppableId);
+      const reordered = Array.from(columnBugs);
+      const [moved] = reordered.splice(source.index, 1);
+      reordered.splice(destination.index, 0, moved);
+
+      setBugs(prev => {
+        const otherBugs = prev.filter(b => b.status !== source.droppableId);
+        return [...otherBugs, ...reordered];
+      });
     }
   };
 
@@ -505,6 +816,18 @@ export const BugTrackerPage: React.FC = () => {
             />
           </div>
 
+          {/* Annotation filter */}
+          <div className="w-36 sm:w-44">
+            <SearchableSelect
+              options={annotationFilterOptions}
+              value={annotationFilter}
+              onChange={(val) => setAnnotationFilter(val)}
+              placeholder="Đánh dấu ảnh..."
+              searchable={false}
+              size="sm"
+            />
+          </div>
+
           {/* View Mode Toggle */}
           <div className="flex items-center rounded-xl border border-border bg-muted/40 p-0.5 text-xs">
             <button
@@ -551,107 +874,83 @@ export const BugTrackerPage: React.FC = () => {
           </button>
         </div>
       ) : viewMode === 'board' ? (
-        /* KANBAN BOARD VIEW */
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-5 items-start">
-          {/* COLUMN 1: CHƯA FIX (TODO) */}
-          <div className="bg-muted/20 border border-border rounded-3xl p-4 space-y-3">
-            <div className="flex items-center justify-between px-1">
-              <div className="flex items-center gap-2">
-                <span className="w-2.5 h-2.5 rounded-full bg-amber-500" />
-                <h3 className="font-bold text-xs uppercase tracking-wider text-foreground">
-                  Chưa Fix ({bugs.filter(b => b.status === 'todo').length})
-                </h3>
-              </div>
-            </div>
+        /* KANBAN BOARD VIEW WITH DRAG & DROP */
+        <DragDropContext onDragEnd={onDragEnd}>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5 items-start">
+            {KANBAN_COLUMNS.map((col) => {
+              const colBugs = safeBugs.filter((b) => b.status === col.id);
 
-            <div className="space-y-3">
-              {bugs.filter(b => b.status === 'todo').map(bug => (
-                <BugCard
-                  key={bug.id}
-                  bug={bug}
-                  onClick={() => openDetailModal(bug)}
-                  onEdit={() => openEditModal(bug)}
-                  onDelete={(e) => handleDeleteBug(bug.id, e)}
-                  onStatusChange={(nextStatus, e) => handleQuickStatusChange(bug.id, nextStatus, e)}
-                  getTypeBadge={getTypeBadge}
-                  getSeverityBadge={getSeverityBadge}
-                  onPreviewImage={setPreviewImage}
-                />
-              ))}
-              {bugs.filter(b => b.status === 'todo').length === 0 && (
-                <div className="py-8 text-center text-xs text-muted-foreground border border-dashed border-border/80 rounded-2xl">
-                  Không có bug chưa fix
-                </div>
-              )}
-            </div>
+              return (
+                <Droppable key={col.id} droppableId={col.id}>
+                  {(provided, snapshot) => (
+                    <div
+                      ref={provided.innerRef}
+                      {...provided.droppableProps}
+                      className={`border rounded-3xl p-4 space-y-3 transition-colors duration-150 min-h-[350px] flex flex-col ${
+                        snapshot.isDraggingOver
+                          ? 'bg-primary/5 border-primary/50 ring-2 ring-primary/20 shadow-md'
+                          : 'bg-muted/20 border-border'
+                      }`}
+                    >
+                      {/* Column Header */}
+                      <div className="flex items-center justify-between px-1">
+                        <div className="flex items-center gap-2">
+                          <span className={`w-2.5 h-2.5 rounded-full ${col.dotColor}`} />
+                          <h3 className="font-bold text-xs uppercase tracking-wider text-foreground">
+                            {col.label} ({colBugs.length})
+                          </h3>
+                        </div>
+                      </div>
+
+                      {/* Cards List with Draggable */}
+                      <div className="space-y-3 flex-1">
+                        {colBugs.map((bug, index) => (
+                          <Draggable key={String(bug.id)} draggableId={String(bug.id)} index={index}>
+                            {(dragProvided, dragSnapshot) => (
+                              <div
+                                ref={dragProvided.innerRef}
+                                {...dragProvided.draggableProps}
+                                {...dragProvided.dragHandleProps}
+                                style={dragProvided.draggableProps.style}
+                                className={`select-none ${
+                                  dragSnapshot.isDragging
+                                    ? 'opacity-95 shadow-2xl ring-2 ring-primary/40 rounded-2xl cursor-grabbing'
+                                    : 'cursor-grab'
+                                }`}
+                              >
+                                <BugCard
+                                  bug={bug}
+                                  onClick={() => openDetailModal(bug)}
+                                  onEdit={() => openEditModal(bug)}
+                                  onDelete={(e) => handleDeleteBug(bug.id, e)}
+                                  onStatusChange={(nextStatus, e) => handleQuickStatusChange(bug.id, nextStatus, e)}
+                                  getTypeBadge={getTypeBadge}
+                                  getSeverityBadge={getSeverityBadge}
+                                  onPreviewImage={setPreviewImage}
+                                  onOpenAnnotation={(bugItem, imgId) =>
+                                    setAnnotationModalState({ isOpen: true, bug: bugItem, imageId: imgId })
+                                  }
+                                />
+                              </div>
+                            )}
+                          </Draggable>
+                        ))}
+                        {provided.placeholder}
+
+                        {colBugs.length === 0 && (
+                          <div className="py-12 text-center text-xs text-muted-foreground border border-dashed border-border/80 rounded-2xl flex flex-col items-center justify-center gap-1">
+                            <span>Không có bug nào ở cột này</span>
+                            <span className="text-[10px] text-muted-foreground/70">Kéo thả bug vào đây</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </Droppable>
+              );
+            })}
           </div>
-
-          {/* COLUMN 2: ĐANG FIX (IN PROGRESS) */}
-          <div className="bg-muted/20 border border-border rounded-3xl p-4 space-y-3">
-            <div className="flex items-center justify-between px-1">
-              <div className="flex items-center gap-2">
-                <span className="w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse" />
-                <h3 className="font-bold text-xs uppercase tracking-wider text-foreground">
-                  Đang Fix ({bugs.filter(b => b.status === 'in_progress').length})
-                </h3>
-              </div>
-            </div>
-
-            <div className="space-y-3">
-              {bugs.filter(b => b.status === 'in_progress').map(bug => (
-                <BugCard
-                  key={bug.id}
-                  bug={bug}
-                  onClick={() => openDetailModal(bug)}
-                  onEdit={() => openEditModal(bug)}
-                  onDelete={(e) => handleDeleteBug(bug.id, e)}
-                  onStatusChange={(nextStatus, e) => handleQuickStatusChange(bug.id, nextStatus, e)}
-                  getTypeBadge={getTypeBadge}
-                  getSeverityBadge={getSeverityBadge}
-                  onPreviewImage={setPreviewImage}
-                />
-              ))}
-              {bugs.filter(b => b.status === 'in_progress').length === 0 && (
-                <div className="py-8 text-center text-xs text-muted-foreground border border-dashed border-border/80 rounded-2xl">
-                  Không có bug đang fix
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* COLUMN 3: ĐÃ FIX (RESOLVED) */}
-          <div className="bg-muted/20 border border-border rounded-3xl p-4 space-y-3">
-            <div className="flex items-center justify-between px-1">
-              <div className="flex items-center gap-2">
-                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
-                <h3 className="font-bold text-xs uppercase tracking-wider text-foreground">
-                  Đã Fix ({bugs.filter(b => b.status === 'resolved').length})
-                </h3>
-              </div>
-            </div>
-
-            <div className="space-y-3">
-              {bugs.filter(b => b.status === 'resolved').map(bug => (
-                <BugCard
-                  key={bug.id}
-                  bug={bug}
-                  onClick={() => openDetailModal(bug)}
-                  onEdit={() => openEditModal(bug)}
-                  onDelete={(e) => handleDeleteBug(bug.id, e)}
-                  onStatusChange={(nextStatus, e) => handleQuickStatusChange(bug.id, nextStatus, e)}
-                  getTypeBadge={getTypeBadge}
-                  getSeverityBadge={getSeverityBadge}
-                  onPreviewImage={setPreviewImage}
-                />
-              ))}
-              {bugs.filter(b => b.status === 'resolved').length === 0 && (
-                <div className="py-8 text-center text-xs text-muted-foreground border border-dashed border-border/80 rounded-2xl">
-                  Chưa có bug nào đã fix
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
+        </DragDropContext>
       ) : (
         /* LIST / TABLE VIEW */
         <div className="bg-card border border-border rounded-3xl overflow-hidden shadow-sm">
@@ -680,8 +979,16 @@ export const BugTrackerPage: React.FC = () => {
                       #{bug.id}
                     </td>
                     <td className="py-3 px-4 min-w-[200px]">
-                      <div className="font-bold text-foreground group-hover:text-primary transition line-clamp-1">
-                        {bug.title}
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-foreground group-hover:text-primary transition line-clamp-1">
+                          {bug.title}
+                        </span>
+                        {bug.has_annotations && (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-primary/10 text-primary border border-primary/20 shrink-0">
+                            <Sparkles className="w-2.5 h-2.5" />
+                            <span>{bug.annotated_images_count || 1} ảnh có đánh dấu</span>
+                          </span>
+                        )}
                       </div>
                       {bug.fix_solution && (
                         <div className="text-[11px] text-emerald-600 dark:text-emerald-400 truncate max-w-sm">
@@ -726,6 +1033,16 @@ export const BugTrackerPage: React.FC = () => {
                     </td>
                     <td className="py-3 px-4 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center justify-end gap-1">
+                        {bug.attachments?.some(a => a.isImage) && (
+                          <button
+                            type="button"
+                            onClick={() => setAnnotationModalState({ isOpen: true, bug })}
+                            className="p-1.5 rounded-lg hover:bg-primary/15 text-muted-foreground hover:text-primary transition"
+                            title="Mở trình đánh dấu ảnh"
+                          >
+                            <Sparkles className="w-3.5 h-3.5 text-primary" />
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => openEditModal(bug)}
@@ -753,33 +1070,43 @@ export const BugTrackerPage: React.FC = () => {
       )}
 
       {/* CREATE / EDIT BUG MODAL */}
-      {isFormModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-background/80 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-card border border-border rounded-3xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[92dvh]">
-            <div className="p-4 sm:p-6 border-b border-border bg-muted/30 flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-red-500/10 text-red-600 dark:text-red-400 flex items-center justify-center">
-                  <Bug className="w-5 h-5" />
+      {isFormModalOpen && typeof document !== 'undefined' && createPortal(
+        <div 
+          className="fixed inset-0 z-[70] flex items-center justify-center p-3 sm:p-4 bg-background/80 backdrop-blur-sm animate-in fade-in duration-200"
+        >
+          <div 
+            className="bg-card border border-border rounded-2xl sm:rounded-3xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90dvh]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header: Compact and pinned (shrink-0) */}
+            <div className="px-4 sm:px-5 py-2.5 sm:py-3 border-b border-border bg-muted/30 flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-xl bg-red-500/10 text-red-600 dark:text-red-400 flex items-center justify-center shrink-0">
+                  <Bug className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                 </div>
-                <div>
-                  <h2 className="font-extrabold text-base sm:text-lg text-foreground">
+                <div className="min-w-0">
+                  <h2 className="font-bold text-sm sm:text-base text-foreground leading-tight truncate">
                     {editingBug ? 'Chỉnh Sửa Bug' : 'Báo Cáo Bug Mới'}
                   </h2>
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-[11px] text-muted-foreground leading-tight truncate">
                     Ghi chép thông tin lỗi, đính kèm ảnh và mô tả cách sửa.
                   </p>
                 </div>
               </div>
               <button
                 type="button"
-                onClick={() => setIsFormModalOpen(false)}
-                className="p-2 rounded-xl text-muted-foreground hover:text-foreground hover:bg-accent transition"
+                onClick={closeFormModal}
+                className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition shrink-0 ml-2"
+                title="Đóng"
               >
-                <X className="w-5 h-5" />
+                <X className="w-4 h-4" />
               </button>
             </div>
 
-            <form onSubmit={handleSubmitForm} className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 text-xs">
+            {/* Form wrapping scrollable content and fixed sticky footer */}
+            <form onSubmit={handleSubmitForm} className="flex flex-col flex-1 min-h-0 overflow-hidden">
+              {/* Scrollable Form Body */}
+              <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-3.5 text-xs">
               {/* Tiêu đề bug */}
               <div className="space-y-1.5">
                 <label className="font-bold text-foreground block">
@@ -931,97 +1258,178 @@ export const BugTrackerPage: React.FC = () => {
 
               {/* Upload hình ảnh / File đính kèm */}
               <div className="space-y-2">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <label className="font-bold text-foreground flex items-center gap-1.5">
                     <Paperclip className="w-3.5 h-3.5 text-primary" />
                     <span>Hình ảnh minh họa / Tệp lỗi ({formAttachments.length})</span>
                   </label>
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={isUploading}
-                    className="text-xs font-bold text-primary hover:underline flex items-center gap-1"
-                  >
-                    <Upload className="w-3.5 h-3.5" />
-                    <span>{isUploading ? 'Đang tải lên...' : 'Tải tệp / ảnh lên'}</span>
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handlePasteButtonClick}
+                      disabled={isSubmitting}
+                      className="text-xs font-bold text-primary hover:text-primary/90 flex items-center gap-1.5 px-2.5 py-1 rounded-xl border border-primary/30 bg-primary/10 hover:bg-primary/15 transition shadow-2xs"
+                      title="Dán ảnh từ clipboard (hoặc nhấn Ctrl + V trực tiếp)"
+                    >
+                      <ClipboardPaste className="w-3.5 h-3.5" />
+                      <span>Dán ảnh (Ctrl+V)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={isSubmitting}
+                      className="text-xs font-bold text-muted-foreground hover:text-foreground flex items-center gap-1.5 px-2.5 py-1 rounded-xl border border-border bg-background hover:bg-accent transition"
+                    >
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>{isSubmitting ? 'Đang lưu...' : 'Tải tệp / ảnh'}</span>
+                    </button>
+                  </div>
                   <input
                     ref={fileInputRef}
                     type="file"
                     multiple
                     accept="image/*,.log,.txt,.json,.pdf,.xlsx,.csv"
-                    onChange={handleFileUpload}
+                    onChange={handleFileInputChange}
                     className="hidden"
                   />
                 </div>
 
-                {formAttachments.length > 0 && (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 pt-1">
-                    {formAttachments.map((att) => (
-                      <div
-                        key={att.id}
-                        className="rounded-xl border border-border bg-background p-2 relative flex items-center gap-2 group"
-                      >
-                        {att.isImage ? (
-                          <img
-                            src={resolveApiUrl(att.url)}
-                            alt=""
-                            className="w-10 h-10 rounded-lg object-cover bg-muted shrink-0 cursor-pointer"
-                            onClick={() => setPreviewImage({ url: resolveApiUrl(att.url), title: att.originalName })}
-                          />
-                        ) : (
-                          <div className="w-10 h-10 rounded-lg bg-muted flex items-center justify-center shrink-0">
-                            <FileIcon className="w-5 h-5 text-muted-foreground" />
-                          </div>
-                        )}
-                        <div className="min-w-0 flex-1">
-                          <span className="font-semibold text-foreground truncate block text-[11px]" title={att.originalName}>
-                            {att.originalName}
-                          </span>
-                          <span className="text-[10px] text-muted-foreground">
-                            {formatBytes(att.size)}
-                          </span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => removeAttachment(att.id)}
-                          className="p-1 rounded-md hover:bg-red-500/10 text-muted-foreground hover:text-red-600 transition shrink-0"
-                          title="Xóa tệp"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    ))}
+                {/* Drop & Paste Area */}
+                {formAttachments.length === 0 ? (
+                  <div
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
+                    onClick={() => fileInputRef.current?.click()}
+                    className={`border-2 border-dashed rounded-2xl p-5 text-center cursor-pointer transition flex flex-col items-center justify-center gap-2 ${
+                      isDragOver
+                        ? 'border-primary bg-primary/10'
+                        : 'border-border/80 hover:border-primary/50 bg-muted/20 hover:bg-muted/40'
+                    }`}
+                  >
+                    <div className="w-10 h-10 rounded-2xl bg-primary/10 text-primary flex items-center justify-center">
+                      <ImageIcon className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold text-foreground">
+                        <span className="text-primary font-bold">Nhấn Ctrl + V để dán ảnh</span>, kéo thả hoặc click để chọn tệp
+                      </p>
+                      <p className="text-[11px] text-muted-foreground mt-0.5">
+                        Hỗ trợ ảnh chụp màn hình từ clipboard, PNG, JPG, GIF, WebP, PDF, Log, Excel... (tối đa 25MB)
+                      </p>
+                    </div>
                   </div>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 pt-1">
+                      {formAttachments.map((att) => (
+                        <div
+                          key={att.id}
+                          className="rounded-xl border border-border bg-background p-2 relative flex items-center gap-2 group"
+                        >
+                          {att.isImage ? (
+                            <img
+                              src={att.isPending ? att.previewUrl : resolveApiUrl(att.url!)}
+                              alt=""
+                              className="w-10 h-10 rounded-lg object-cover bg-muted shrink-0 cursor-pointer"
+                              onClick={() => setPreviewImage({ 
+                                url: att.isPending ? att.previewUrl! : resolveApiUrl(att.url!), 
+                                title: att.originalName 
+                              })}
+                            />
+                          ) : (
+                            <div className="w-10 h-10 rounded-lg bg-muted flex items-center justify-center shrink-0">
+                              <FileIcon className="w-5 h-5 text-muted-foreground" />
+                            </div>
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1">
+                              <span className="font-semibold text-foreground truncate block text-[11px]" title={att.originalName}>
+                                {att.originalName}
+                              </span>
+                              {att.isPending && (
+                                <span className="shrink-0 text-[9px] px-1 py-0.2 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400 font-semibold">
+                                  Mới
+                                </span>
+                              )}
+                            </div>
+                            <span className="text-[10px] text-muted-foreground">
+                              {formatBytes(att.size)}
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => removeAttachment(att.id)}
+                            className="p-1 rounded-md hover:bg-red-500/10 text-muted-foreground hover:text-red-600 transition shrink-0"
+                            title="Xóa tệp"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Quick paste / drop helper when attachments already exist */}
+                    <div
+                      onDragOver={handleDragOver}
+                      onDragLeave={handleDragLeave}
+                      onDrop={handleDrop}
+                      onClick={() => fileInputRef.current?.click()}
+                      className={`border border-dashed rounded-xl py-2 px-3 text-center cursor-pointer transition flex items-center justify-center gap-2 text-xs ${
+                        isDragOver
+                          ? 'border-primary bg-primary/10 text-primary'
+                          : 'border-border/70 hover:border-primary/50 bg-muted/10 hover:bg-muted/30 text-muted-foreground'
+                      }`}
+                    >
+                      <ClipboardPaste className="w-3.5 h-3.5 text-primary shrink-0" />
+                      <span>Nhấn <strong className="text-foreground">Ctrl + V</strong> để dán thêm ảnh chụp màn hình, hoặc click/thả tệp vào đây</span>
+                    </div>
+                  </>
                 )}
               </div>
+            </div>
 
-              {/* Form Actions */}
-              <div className="pt-4 border-t border-border flex items-center justify-end gap-2.5">
-                <button
-                  type="button"
-                  onClick={() => setIsFormModalOpen(false)}
-                  className="px-4 py-2 rounded-xl border border-border text-foreground hover:bg-accent font-bold transition"
-                >
-                  Hủy Bỏ
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSubmitting || !formTitle.trim()}
-                  className="px-5 py-2 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground font-bold shadow-sm transition disabled:opacity-50"
-                >
-                  {isSubmitting ? 'Đang lưu...' : editingBug ? 'Lưu Thay Đổi' : 'Ghi Nhận Bug'}
-                </button>
-              </div>
-            </form>
-          </div>
+            {/* Sticky Compact Footer (Pinned at bottom, does not scroll) */}
+            <div className="shrink-0 px-4 sm:px-5 py-2.5 border-t border-border bg-card flex items-center justify-end gap-2 text-xs">
+              <button
+                type="button"
+                onClick={closeFormModal}
+                className="px-3.5 py-1.5 rounded-xl border border-border text-foreground hover:bg-accent font-semibold transition"
+              >
+                Hủy Bỏ
+              </button>
+              <button
+                type="submit"
+                disabled={isSubmitting || !formTitle.trim()}
+                className="px-4 py-1.5 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground font-bold shadow-sm transition disabled:opacity-50 flex items-center gap-1.5"
+              >
+                {isSubmitting ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>{editingBug ? 'Đang lưu...' : 'Đang tải ảnh & lưu...'}</span>
+                  </>
+                ) : editingBug ? (
+                  'Lưu Thay Đổi'
+                ) : (
+                  'Ghi Nhận Bug'
+                )}
+              </button>
+            </div>
+          </form>
         </div>
-      )}
+      </div>,
+      document.body
+    )}
 
       {/* BUG DETAIL MODAL */}
-      {isDetailModalOpen && selectedBug && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-background/80 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-card border border-border rounded-3xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[92dvh]">
+      {isDetailModalOpen && selectedBug && typeof document !== 'undefined' && createPortal(
+        <div 
+          className="fixed inset-0 z-[70] flex items-center justify-center p-3 sm:p-4 bg-background/80 backdrop-blur-sm animate-in fade-in duration-200"
+        >
+          <div 
+            className="bg-card border border-border rounded-3xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[92dvh]"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="p-4 sm:p-6 border-b border-border bg-muted/30 flex items-start justify-between gap-3">
               <div className="space-y-1.5 min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -1038,6 +1446,15 @@ export const BugTrackerPage: React.FC = () => {
               </div>
 
               <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => handleCopyBugReportMarkdown(selectedBug)}
+                  className="px-2.5 py-1.5 rounded-xl bg-muted hover:bg-accent text-foreground text-xs font-semibold flex items-center gap-1.5 transition"
+                  title="Sao chép toàn bộ báo cáo bug và bảng đánh dấu sang Markdown"
+                >
+                  <FileText className="w-4 h-4 text-primary" />
+                  <span className="hidden sm:inline">Xuất Markdown</span>
+                </button>
                 <button
                   type="button"
                   onClick={() => {
@@ -1158,10 +1575,22 @@ export const BugTrackerPage: React.FC = () => {
               {/* Hình ảnh & Tệp đính kèm */}
               {selectedBug.attachments && selectedBug.attachments.length > 0 && (
                 <div className="space-y-2">
-                  <h4 className="font-bold text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-                    <Paperclip className="w-3.5 h-3.5 text-primary" />
-                    <span>Hình ảnh & Tệp đính kèm ({selectedBug.attachments.length})</span>
-                  </h4>
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-bold text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                      <Paperclip className="w-3.5 h-3.5 text-primary" />
+                      <span>Hình ảnh & Tệp đính kèm ({selectedBug.attachments.length})</span>
+                    </h4>
+                    {selectedBug.attachments.some(a => a.isImage) && (
+                      <button
+                        type="button"
+                        onClick={() => setAnnotationModalState({ isOpen: true, bug: selectedBug })}
+                        className="px-2.5 py-1 rounded-lg bg-primary/10 hover:bg-primary/20 text-primary font-bold text-xs flex items-center gap-1.5 transition"
+                      >
+                        <Sparkles className="w-3.5 h-3.5" />
+                        <span>Mở Trình Đánh Dấu Ảnh</span>
+                      </button>
+                    )}
+                  </div>
 
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
                     {selectedBug.attachments.map((att) => (
@@ -1171,11 +1600,21 @@ export const BugTrackerPage: React.FC = () => {
                       >
                         {att.isImage ? (
                           <div
-                            onClick={() => setPreviewImage({ url: resolveApiUrl(att.url), title: att.originalName })}
+                            onClick={() => setPreviewImage({ 
+                              url: resolveApiUrl(att.url), 
+                              title: att.originalName,
+                              imageId: att.id || att.filename
+                            })}
                             className="aspect-video w-full bg-muted/30 rounded-lg overflow-hidden cursor-pointer relative mb-1.5"
                           >
-                            <img src={resolveApiUrl(att.url)} alt="" className="w-full h-full object-cover group-hover:scale-105 transition duration-200" />
-                            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center text-white">
+                            <AnnotationOverlayView
+                              imageSrc={resolveApiUrl(att.url)}
+                              imageAlt={att.originalName}
+                              annotations={selectedBug.annotations?.[att.id || att.filename]?.annotations || []}
+                              className="w-full h-full"
+                              showToggle={true}
+                            />
+                            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center text-white pointer-events-none">
                               <ZoomIn className="w-4 h-4" />
                             </div>
                           </div>
@@ -1188,16 +1627,32 @@ export const BugTrackerPage: React.FC = () => {
                           <span className="font-semibold text-foreground truncate" title={att.originalName}>
                             {att.originalName}
                           </span>
-                          <a
-                            href={resolveApiUrl(att.url)}
-                            download={att.originalName}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition"
-                            title="Tải về"
-                          >
-                            <Download className="w-3 h-3" />
-                          </a>
+                          <div className="flex items-center gap-1 shrink-0">
+                            {att.isImage && (
+                              <button
+                                type="button"
+                                onClick={() => setAnnotationModalState({
+                                  isOpen: true,
+                                  bug: selectedBug,
+                                  imageId: att.id || att.filename
+                                })}
+                                className="p-1 rounded hover:bg-primary/20 text-primary transition"
+                                title="Đánh dấu ảnh này"
+                              >
+                                <Sparkles className="w-3 h-3" />
+                              </button>
+                            )}
+                            <a
+                              href={resolveApiUrl(att.url)}
+                              download={att.originalName}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition"
+                              title="Tải về"
+                            >
+                              <Download className="w-3 h-3" />
+                            </a>
+                          </div>
                         </div>
                       </div>
                     ))}
@@ -1206,14 +1661,14 @@ export const BugTrackerPage: React.FC = () => {
               )}
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* FULLSCREEN IMAGE LIGHTBOX */}
-      {previewImage && (
+      {previewImage && typeof document !== 'undefined' && createPortal(
         <div 
           className="fixed inset-0 z-[100] bg-black/85 backdrop-blur-sm flex flex-col animate-in fade-in duration-200"
-          onClick={() => setPreviewImage(null)}
         >
           <div 
             className="p-4 flex items-center justify-between text-white shrink-0 bg-gradient-to-b from-black/80 to-transparent"
@@ -1224,6 +1679,24 @@ export const BugTrackerPage: React.FC = () => {
               <span className="text-sm font-bold truncate max-w-md">{previewImage.title}</span>
             </div>
             <div className="flex items-center gap-2 shrink-0">
+              {selectedBug && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const currentBug = selectedBug;
+                    setPreviewImage(null);
+                    setAnnotationModalState({
+                      isOpen: true,
+                      bug: currentBug
+                    });
+                  }}
+                  className="p-2 rounded-xl bg-primary text-primary-foreground hover:opacity-90 transition flex items-center gap-1.5 text-xs font-semibold"
+                  title="Mở trình đánh dấu ảnh"
+                >
+                  <Sparkles className="w-4 h-4" />
+                  <span className="hidden sm:inline">Đánh dấu ảnh</span>
+                </button>
+              )}
               <a
                 href={previewImage.url}
                 download
@@ -1253,15 +1726,29 @@ export const BugTrackerPage: React.FC = () => {
               </button>
             </div>
           </div>
-          <div className="flex-1 flex items-center justify-center p-4 overflow-hidden">
-            <img
-              src={previewImage.url}
-              alt={previewImage.title}
-              onClick={(e) => e.stopPropagation()}
-              className="max-h-full max-w-full object-contain rounded-xl shadow-2xl select-none"
+          <div className="flex-1 flex items-center justify-center p-4 overflow-hidden relative" onClick={(e) => e.stopPropagation()}>
+            <AnnotationOverlayView
+              imageSrc={previewImage.url}
+              imageAlt={previewImage.title}
+              annotations={(previewImage.imageId && selectedBug?.annotations?.[previewImage.imageId]?.annotations) || []}
+              className="max-h-[85vh] max-w-[90vw] rounded-xl shadow-2xl"
+              fit="contain"
+              showToggle={true}
             />
           </div>
-        </div>
+        </div>,
+        document.body
+      )}
+
+      {/* BUG IMAGE ANNOTATION MODAL */}
+      {annotationModalState.isOpen && annotationModalState.bug && (
+        <AnnotationModal
+          isOpen={annotationModalState.isOpen}
+          onClose={() => setAnnotationModalState({ isOpen: false, bug: null })}
+          bug={annotationModalState.bug}
+          initialImageId={annotationModalState.imageId}
+          onAnnotationsUpdated={() => loadBugs()}
+        />
       )}
     </div>
   );
@@ -1277,9 +1764,10 @@ interface BugCardProps {
   getTypeBadge: (type: BugType) => React.ReactNode;
   getSeverityBadge: (sev: BugSeverity) => React.ReactNode;
   onPreviewImage: (img: { url: string; title: string }) => void;
+  onOpenAnnotation: (bug: BugItem, imageId?: string) => void;
 }
 
-const BugCard: React.FC<BugCardProps> = ({
+const BugCard: React.FC<BugCardProps> = React.memo(({
   bug,
   onClick,
   onEdit,
@@ -1287,7 +1775,8 @@ const BugCard: React.FC<BugCardProps> = ({
   onStatusChange,
   getTypeBadge,
   getSeverityBadge,
-  onPreviewImage
+  onPreviewImage,
+  onOpenAnnotation
 }) => {
   const images = bug.attachments?.filter(a => a.isImage) || [];
 
@@ -1307,6 +1796,16 @@ const BugCard: React.FC<BugCardProps> = ({
         </div>
 
         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition" onClick={(e) => e.stopPropagation()}>
+          {images.length > 0 && (
+            <button
+              type="button"
+              onClick={() => onOpenAnnotation(bug, images[0].id || images[0].filename)}
+              className="p-1 rounded hover:bg-primary/15 text-muted-foreground hover:text-primary transition"
+              title="Đánh dấu hình ảnh"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-primary" />
+            </button>
+          )}
           <button
             type="button"
             onClick={onEdit}
@@ -1343,13 +1842,29 @@ const BugCard: React.FC<BugCardProps> = ({
         <div 
           onClick={(e) => {
             e.stopPropagation();
-            onPreviewImage({ url: images[0].url, title: images[0].originalName });
+            onOpenAnnotation(bug, images[0].id || images[0].filename);
           }}
-          className="aspect-video w-full rounded-xl overflow-hidden bg-muted/30 relative border border-border/60"
+          className="aspect-video w-full rounded-xl overflow-hidden bg-muted/30 relative border border-border/60 group/thumb"
         >
-          <img src={images[0].url} alt="" className="w-full h-full object-cover group-hover:scale-102 transition duration-200" />
-          <div className="absolute bottom-1.5 right-1.5 px-1.5 py-0.5 rounded bg-black/60 text-white text-[9px] font-bold">
+          <AnnotationOverlayView
+            imageSrc={resolveApiUrl(images[0].url)}
+            imageAlt={images[0].originalName}
+            annotations={bug.annotations?.[images[0].id || images[0].filename]?.annotations || bug.annotations?.[images[0].filename]?.annotations || []}
+            className="w-full h-full"
+            showToggle={true}
+          />
+          <div className="absolute bottom-1.5 right-1.5 px-1.5 py-0.5 rounded bg-black/60 text-white text-[9px] font-bold z-10 pointer-events-none">
             {images.length} ảnh
+          </div>
+          {bug.has_annotations && (
+            <div className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded-md bg-primary text-primary-foreground text-[9px] font-bold flex items-center gap-1 shadow-md z-10 pointer-events-none">
+              <Sparkles className="w-2.5 h-2.5" />
+              <span>{bug.annotated_images_count || 1} ảnh có đánh dấu</span>
+            </div>
+          )}
+          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/thumb:opacity-100 transition flex items-center justify-center gap-1 text-white text-[11px] font-bold z-10">
+            <Sparkles className="w-3.5 h-3.5 text-primary" />
+            <span>Mở Đánh Dấu</span>
           </div>
         </div>
       )}
@@ -1430,7 +1945,7 @@ const BugCard: React.FC<BugCardProps> = ({
       </div>
     </div>
   );
-};
+});
 
 function formatBytes(bytes: number): string {
   if (!bytes) return '0 B';

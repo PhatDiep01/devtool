@@ -69,15 +69,17 @@ router.post('/auth/login', async (req: Request, res: Response) => {
   try {
     const { useWorkspace, rememberMe } = req.body;
     let authType = req.body.authType || 'bearer';
-    let { baseUrl, email, apiToken, accessToken, bearerToken } = req.body;
+    let { baseUrl, email, username, password, apiToken, accessToken, bearerToken } = req.body;
 
-    let token = accessToken || bearerToken || apiToken;
+    let token = accessToken || bearerToken || apiToken || password;
+    let userIdentifier = (username || email || '').trim();
 
     const wsConfig = getWorkspaceJiraConfig();
 
     if (useWorkspace) {
       baseUrl = wsConfig.baseUrl;
       email = wsConfig.email;
+      userIdentifier = wsConfig.email;
       token = wsConfig.apiToken;
       if (wsConfig.authType) {
         authType = wsConfig.authType;
@@ -86,7 +88,7 @@ router.post('/auth/login', async (req: Request, res: Response) => {
       if (!token) {
         return res.status(400).json({
           success: false,
-          message: 'Chưa có token được lưu trên máy. Vui lòng nhập Jira API Token.'
+          message: 'Chưa có thông tin xác thực được lưu trên máy. Vui lòng nhập thông tin đăng nhập.'
         });
       }
     }
@@ -95,66 +97,158 @@ router.post('/auth/login', async (req: Request, res: Response) => {
       baseUrl = wsConfig.baseUrl || process.env.JIRA_BASE_URL || 'https://task.ascvn.com.vn';
     }
 
-    if (!token) {
-      return res.status(400).json({
-        success: false,
-        message: 'Vui lòng nhập Jira API Token hoặc Personal Access Token (PAT).'
-      });
+    if (authType === 'basic') {
+      if (!userIdentifier) {
+        return res.status(400).json({
+          success: false,
+          message: 'Vui lòng nhập Tên đăng nhập (Username) hoặc Email.'
+        });
+      }
+      if (!token) {
+        return res.status(400).json({
+          success: false,
+          message: 'Vui lòng nhập Mật khẩu (Password).'
+        });
+      }
+    } else {
+      if (!token) {
+        return res.status(400).json({
+          success: false,
+          message: 'Vui lòng nhập Jira API Token hoặc Personal Access Token (PAT).'
+        });
+      }
     }
 
     const cleanBaseUrl = normalizeJiraUrl(baseUrl);
-    const cleanEmail = (email || wsConfig.email || '').trim();
+    const cleanEmail = (userIdentifier || wsConfig.email || '').trim();
     const cleanToken = (token || '').trim();
 
-    // Try Bearer token first (PAT), then Basic Auth fallback if email is present
-    let myselfRes: any = null;
-    let resolvedAuthType: 'bearer' | 'basic' = 'bearer';
-    const bearerHeader = cleanToken.startsWith('Bearer ') ? cleanToken : `Bearer ${cleanToken}`;
+    // Helper to check if myself response is a genuine Jira user JSON object and not HTML login page
+    const isValidJiraUserResponse = (res: any): boolean => {
+      if (!res || !res.data) return false;
+      if (typeof res.data === 'string') return false;
+      const data = res.data;
+      return Boolean(typeof data === 'object' && (data.name || data.key || data.accountId || data.displayName || data.emailAddress));
+    };
 
-    // 1. Try Bearer PAT against API v2 (Jira Server/DC) or v3 (Cloud)
-    try {
-      myselfRes = await axios.get(`${cleanBaseUrl}/rest/api/2/myself`, {
-        headers: { Authorization: bearerHeader, Accept: 'application/json' },
-        timeout: 10000
-      });
-      resolvedAuthType = 'bearer';
-    } catch (patErr) {
-      try {
-        myselfRes = await axios.get(`${cleanBaseUrl}/rest/api/3/myself`, {
-          headers: { Authorization: bearerHeader, Accept: 'application/json' },
-          timeout: 10000
-        });
-        resolvedAuthType = 'bearer';
-      } catch (cloudBearerErr) {
-        // 2. If Bearer fails and email exists, try Basic Auth (email:token)
-        if (cleanEmail) {
+    const isJiraCloud = cleanBaseUrl.includes('.atlassian.net');
+    let myselfRes: any = null;
+    let resolvedAuthType: 'bearer' | 'basic' = authType === 'basic' ? 'basic' : 'bearer';
+    let isCaptchaBlocked = false;
+
+    if (authType === 'basic') {
+      const basicHeader = `Basic ${Buffer.from(`${cleanEmail}:${cleanToken}`).toString('base64')}`;
+
+      // On Jira Cloud, try v3 then v2. On Jira Server, try v2 exclusively (v3 does not exist and returns HTML login page)
+      const endpoints = isJiraCloud
+        ? [`${cleanBaseUrl}/rest/api/3/myself`, `${cleanBaseUrl}/rest/api/2/myself`]
+        : [`${cleanBaseUrl}/rest/api/2/myself`];
+
+      for (const ep of endpoints) {
+        try {
+          const resp = await axios.get(ep, {
+            headers: { Authorization: basicHeader, Accept: 'application/json' },
+            timeout: 10000
+          });
+          if (isValidJiraUserResponse(resp)) {
+            myselfRes = resp;
+            resolvedAuthType = 'basic';
+            break;
+          }
+        } catch (err: any) {
+          const headers = err.response?.headers || {};
+          const deniedReason = String(headers['x-authentication-denied-reason'] || '');
+          if (deniedReason.includes('CAPTCHA') || err.response?.status === 403) {
+            isCaptchaBlocked = true;
+          }
+        }
+      }
+
+      // If Basic Auth failed and it's Jira Server, also try Session Auth POST /rest/auth/1/session
+      if (!myselfRes && !isJiraCloud && !isCaptchaBlocked) {
+        try {
+          const sessionRes = await axios.post(`${cleanBaseUrl}/rest/auth/1/session`, {
+            username: cleanEmail,
+            password: cleanToken
+          }, {
+            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+            timeout: 10000
+          });
+          const cookieHdr = sessionRes.headers['set-cookie']?.join('; ');
+          if (cookieHdr) {
+            const userResp = await axios.get(`${cleanBaseUrl}/rest/api/2/myself`, {
+              headers: { Cookie: cookieHdr, Accept: 'application/json' },
+              timeout: 10000
+            });
+            if (isValidJiraUserResponse(userResp)) {
+              myselfRes = userResp;
+              resolvedAuthType = 'basic';
+            }
+          }
+        } catch (sessErr: any) {
+          const headers = sessErr.response?.headers || {};
+          const deniedReason = String(headers['x-authentication-denied-reason'] || '');
+          if (deniedReason.includes('CAPTCHA') || sessErr.response?.status === 403) {
+            isCaptchaBlocked = true;
+          }
+        }
+      }
+    } else {
+      // Bearer Token / PAT
+      const bearerHeader = cleanToken.startsWith('Bearer ') ? cleanToken : `Bearer ${cleanToken}`;
+      const endpoints = isJiraCloud
+        ? [`${cleanBaseUrl}/rest/api/3/myself`, `${cleanBaseUrl}/rest/api/2/myself`]
+        : [`${cleanBaseUrl}/rest/api/2/myself`];
+
+      for (const ep of endpoints) {
+        try {
+          const resp = await axios.get(ep, {
+            headers: { Authorization: bearerHeader, Accept: 'application/json' },
+            timeout: 10000
+          });
+          if (isValidJiraUserResponse(resp)) {
+            myselfRes = resp;
+            resolvedAuthType = 'bearer';
+            break;
+          }
+        } catch {}
+      }
+
+      // Fallback: If Bearer failed and cleanEmail exists, try Basic Auth
+      if (!myselfRes && cleanEmail) {
+        const basicHeader = `Basic ${Buffer.from(`${cleanEmail}:${cleanToken}`).toString('base64')}`;
+        for (const ep of endpoints) {
           try {
-            const basicHeader = `Basic ${Buffer.from(`${cleanEmail}:${cleanToken}`).toString('base64')}`;
-            myselfRes = await axios.get(`${cleanBaseUrl}/rest/api/3/myself`, {
+            const resp = await axios.get(ep, {
               headers: { Authorization: basicHeader, Accept: 'application/json' },
               timeout: 10000
             });
-            resolvedAuthType = 'basic';
-          } catch (basicErr3) {
-            try {
-              const basicHeader = `Basic ${Buffer.from(`${cleanEmail}:${cleanToken}`).toString('base64')}`;
-              myselfRes = await axios.get(`${cleanBaseUrl}/rest/api/2/myself`, {
-                headers: { Authorization: basicHeader, Accept: 'application/json' },
-                timeout: 10000
-              });
+            if (isValidJiraUserResponse(resp)) {
+              myselfRes = resp;
               resolvedAuthType = 'basic';
-            } catch (basicErr2: any) {
-              myselfRes = null;
+              break;
             }
-          }
+          } catch {}
         }
       }
     }
 
     if (!myselfRes) {
+      if (isCaptchaBlocked) {
+        return res.status(403).json({
+          success: false,
+          isCaptcha: true,
+          message: `Máy chủ Jira đang yêu cầu xác minh CAPTCHA cho tài khoản "${cleanEmail}". Vui lòng đăng nhập 1 lần trên trình duyệt tại ${cleanBaseUrl}/login.jsp để vượt CAPTCHA, hoặc dùng tab "API Token / PAT" để đăng nhập ngay mà không bị chặn.`
+        });
+      }
+
+      const errorMsg = authType === 'basic'
+        ? 'Tên đăng nhập hoặc mật khẩu Jira không chính xác.'
+        : 'Xác thực không thành công. Jira API Token không hợp lệ hoặc đã hết hạn.';
+
       return res.status(401).json({
         success: false,
-        message: 'Xác thực không thành công. Jira API Token không hợp lệ hoặc đã hết hạn.'
+        message: errorMsg
       });
     }
 
@@ -184,9 +278,13 @@ router.post('/auth/login', async (req: Request, res: Response) => {
         INSERT INTO settings (key, value, category) VALUES ('jira_auth_type', ?, 'jira')
         ON CONFLICT(key) DO UPDATE SET value = excluded.value
       `).run(resolvedAuthType);
-    } else {
-      // Không check: Xóa token khỏi settings để không lưu vĩnh viễn trên disk
-      db.prepare("DELETE FROM settings WHERE key = 'jira_api_token'").run();
+
+      if (cleanEmail || resolvedEmail) {
+        db.prepare(`
+          INSERT INTO settings (key, value, category) VALUES ('jira_email', ?, 'jira')
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        `).run(cleanEmail || resolvedEmail);
+      }
     }
 
     // Thời lượng phiên: Nếu remember => 30 ngày. Nếu không remember => 8 tiếng (1 phiên làm việc)
@@ -255,7 +353,7 @@ router.post('/auth/logout', (req: Request, res: Response) => {
       db.prepare('DELETE FROM jira_sessions WHERE token = ?').run(session.token);
     }
     // "khi đăng xuất ra thì hãy xóa token đã lưu ở sql"
-    db.prepare("DELETE FROM settings WHERE key = 'jira_api_token'").run();
+    db.prepare("DELETE FROM settings WHERE key IN ('jira_api_token', 'jira_email')").run();
 
     res.json({ success: true, message: 'Đã đăng xuất và xóa token đã lưu trong SQLite' });
   } catch (error: any) {
@@ -277,7 +375,19 @@ router.get('/status', async (req: Request, res: Response) => {
 
   try {
     const client = createJiraClientFromSession(session);
-    const response = await client.get('/rest/api/3/myself');
+    const isJiraServer = !session.base_url.includes('.atlassian.net');
+    const endpoint = isJiraServer ? '/rest/api/2/myself' : '/rest/api/3/myself';
+    const response = await client.get(endpoint);
+
+    if (typeof response.data === 'string' || !response.data || (!response.data.name && !response.data.displayName && !response.data.accountId)) {
+      return res.json({
+        connected: false,
+        configured: true,
+        authenticated: false,
+        expiresAt: session.expires_at,
+        message: 'Phiên Jira không hợp lệ hoặc máy chủ trả về trang đăng nhập HTML.'
+      });
+    }
 
     res.json({
       connected: true,
@@ -335,6 +445,83 @@ async function getJiraSessionCookie(baseUrl: string, patOrAuthHeader: string, is
   }
   return '';
 }
+
+// GET /api/jira/proxy/image - Proxy Jira avatar, issuetype icon, and priority icons
+router.get(['/proxy/image', '/proxy-image'], async (req: Request, res: Response) => {
+  try {
+    const rawUrl = (req.query.url as string) || '';
+    if (!rawUrl) {
+      return res.status(400).json({ error: 'Missing image URL' });
+    }
+
+    const session = getActiveJiraSession(req);
+    const configuredBaseUrl = session?.base_url || process.env.JIRA_BASE_URL || 'https://task.ascvn.com.vn';
+    const cleanBaseUrl = normalizeJiraUrl(configuredBaseUrl);
+
+    let targetUrl = decodeURIComponent(rawUrl);
+    if (targetUrl.startsWith('/')) {
+      targetUrl = `${cleanBaseUrl}${targetUrl}`;
+    }
+
+    // Security validation: Only proxy images from Jira domain
+    try {
+      const parsedTarget = new URL(targetUrl);
+      const parsedBase = new URL(cleanBaseUrl);
+      if (
+        parsedTarget.hostname !== parsedBase.hostname && 
+        !parsedTarget.hostname.endsWith('atlassian.net') &&
+        !parsedTarget.hostname.includes('ascvn.com.vn')
+      ) {
+        return res.status(403).json({ error: 'Untrusted image target host' });
+      }
+    } catch {
+      return res.status(400).json({ error: 'Invalid URL format' });
+    }
+
+    const isBearer = session ? (session.auth_type === 'bearer' || !session.user_email || session.api_token.startsWith('Bearer ')) : true;
+    const authHeader = session
+      ? (isBearer
+          ? (session.api_token.startsWith('Bearer ') ? session.api_token : `Bearer ${session.api_token}`)
+          : `Basic ${Buffer.from(`${session.user_email}:${session.api_token}`).toString('base64')}`)
+      : undefined;
+
+    let cookie = '';
+    if (session && !cleanBaseUrl.includes('.atlassian.net') && authHeader) {
+      cookie = await getJiraSessionCookie(cleanBaseUrl, authHeader, isBearer);
+    }
+
+    const reqHeaders: Record<string, string> = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) DevToolkit/1.0',
+      'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
+    };
+    if (authHeader) {
+      reqHeaders['Authorization'] = authHeader;
+    }
+    if (cookie) {
+      reqHeaders['Cookie'] = cookie;
+    }
+
+    const imgResp = await axios.get(targetUrl, {
+      headers: reqHeaders,
+      responseType: 'arraybuffer',
+      timeout: 15000,
+      maxRedirects: 5,
+      validateStatus: (status) => status < 400
+    });
+
+    const contentType = String(imgResp.headers['content-type'] || 'image/png');
+    // If returned HTML (e.g. login redirect), reject
+    if (contentType.includes('text/html')) {
+      return res.status(404).send('Not found');
+    }
+
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+    return res.send(imgResp.data);
+  } catch (error: any) {
+    return res.status(error.response?.status || 500).json({ error: 'Failed to fetch Jira image' });
+  }
+});
 
 // GET /api/jira/attachments/:id/:filename? - Proxy Jira attachments & inline images
 router.get('/attachments/:id/:filename?', async (req: Request, res: Response) => {
@@ -923,12 +1110,15 @@ router.post('/issues', async (req: AuthenticatedJiraRequest, res: Response) => {
 router.get('/issues/:key', async (req: AuthenticatedJiraRequest, res: Response) => {
   try {
     const { key } = req.params;
-    const resp = await req.jiraClient!.get(
-      `/rest/api/3/issue/${key}?expand=names,renderedFields,transitions,operations,changelog`
-    );
+    const isJiraServer = !req.jiraSession?.base_url?.includes('.atlassian.net');
+    const endpoint = isJiraServer
+      ? `/rest/api/2/issue/${key}?expand=names,renderedFields,transitions,operations,changelog`
+      : `/rest/api/3/issue/${key}?expand=names,renderedFields,transitions,operations,changelog`;
+    const resp = await req.jiraClient!.get(endpoint);
     res.json(resp.data);
   } catch (error: any) {
-    res.status(error.response?.status || 500).json({ error: error.response?.data || error.message });
+    const formatted = formatJiraError(error);
+    res.status(error.response?.status || 500).json(formatted);
   }
 });
 
@@ -937,16 +1127,27 @@ router.put('/issues/:key', async (req: AuthenticatedJiraRequest, res: Response) 
   try {
     const { key } = req.params;
     const payload = { ...req.body };
+    const isJiraServer = !req.jiraSession?.base_url?.includes('.atlassian.net');
 
-    // Auto-convert plain description to ADF if provided
-    if (payload.fields?.description && typeof payload.fields.description === 'string') {
-      payload.fields.description = textToAdf(payload.fields.description);
+    // Auto-convert plain description to ADF if provided for Cloud, or ensure plain string for Server
+    if (payload.fields?.description) {
+      if (isJiraServer) {
+        payload.fields.description = typeof payload.fields.description === 'string'
+          ? payload.fields.description
+          : adfToText(payload.fields.description);
+      } else {
+        payload.fields.description = typeof payload.fields.description === 'object' && payload.fields.description.type === 'doc'
+          ? payload.fields.description
+          : textToAdf(payload.fields.description);
+      }
     }
 
-    const resp = await req.jiraClient!.put(`/rest/api/3/issue/${key}`, payload);
+    const endpoint = isJiraServer ? `/rest/api/2/issue/${key}` : `/rest/api/3/issue/${key}`;
+    const resp = await req.jiraClient!.put(endpoint, payload);
     res.json(resp.data || { success: true });
   } catch (error: any) {
-    res.status(error.response?.status || 500).json({ error: error.response?.data || error.message });
+    const formatted = formatJiraError(error);
+    res.status(error.response?.status || 500).json(formatted);
   }
 });
 
@@ -954,10 +1155,13 @@ router.put('/issues/:key', async (req: AuthenticatedJiraRequest, res: Response) 
 router.get('/issues/:key/transitions', async (req: AuthenticatedJiraRequest, res: Response) => {
   try {
     const { key } = req.params;
-    const resp = await req.jiraClient!.get(`/rest/api/3/issue/${key}/transitions`);
+    const isJiraServer = !req.jiraSession?.base_url?.includes('.atlassian.net');
+    const endpoint = isJiraServer ? `/rest/api/2/issue/${key}/transitions` : `/rest/api/3/issue/${key}/transitions`;
+    const resp = await req.jiraClient!.get(endpoint);
     res.json(resp.data.transitions || []);
   } catch (error: any) {
-    res.status(error.response?.status || 500).json({ error: error.response?.data || error.message });
+    const formatted = formatJiraError(error);
+    res.status(error.response?.status || 500).json(formatted);
   }
 });
 
@@ -966,12 +1170,15 @@ router.post('/issues/:key/transitions', async (req: AuthenticatedJiraRequest, re
   try {
     const { key } = req.params;
     const { transitionId } = req.body;
-    await req.jiraClient!.post(`/rest/api/3/issue/${key}/transitions`, {
+    const isJiraServer = !req.jiraSession?.base_url?.includes('.atlassian.net');
+    const endpoint = isJiraServer ? `/rest/api/2/issue/${key}/transitions` : `/rest/api/3/issue/${key}/transitions`;
+    await req.jiraClient!.post(endpoint, {
       transition: { id: transitionId }
     });
     res.json({ success: true });
   } catch (error: any) {
-    res.status(error.response?.status || 500).json({ error: error.response?.data || error.message });
+    const formatted = formatJiraError(error);
+    res.status(error.response?.status || 500).json(formatted);
   }
 });
 
@@ -980,18 +1187,24 @@ router.post('/issues/:key/comment', async (req: AuthenticatedJiraRequest, res: R
   try {
     const { key } = req.params;
     const { body } = req.body;
-    if (!body || !body.trim()) {
-      return res.status(400).json({ error: 'Comment body is required' });
+    if (!body || (typeof body === 'string' && !body.trim())) {
+      return res.status(400).json({ error: 'Comment body is required', message: 'Nội dung bình luận không được để trống' });
     }
 
-    const commentDoc = typeof body === 'object' && body.type === 'doc' ? body : textToAdf(body);
+    const isJiraServer = !req.jiraSession?.base_url?.includes('.atlassian.net');
+    const commentPayload = isJiraServer
+      ? (typeof body === 'string' ? body.trim() : adfToText(body))
+      : (typeof body === 'object' && body.type === 'doc' ? body : textToAdf(body));
 
-    const resp = await req.jiraClient!.post(`/rest/api/3/issue/${key}/comment`, {
-      body: commentDoc
+    const endpoint = isJiraServer ? `/rest/api/2/issue/${key}/comment` : `/rest/api/3/issue/${key}/comment`;
+
+    const resp = await req.jiraClient!.post(endpoint, {
+      body: commentPayload
     });
     res.json(resp.data);
   } catch (error: any) {
-    res.status(error.response?.status || 500).json({ error: error.response?.data || error.message });
+    const formatted = formatJiraError(error);
+    res.status(error.response?.status || 500).json(formatted);
   }
 });
 
@@ -999,13 +1212,15 @@ router.post('/issues/:key/comment', async (req: AuthenticatedJiraRequest, res: R
 router.get('/issues/:key/worklog', async (req: AuthenticatedJiraRequest, res: Response) => {
   try {
     const { key } = req.params;
-    const resp = await req.jiraClient!.get(`/rest/api/3/issue/${key}/worklog`);
+    const isJiraServer = !req.jiraSession?.base_url?.includes('.atlassian.net');
+    const endpoint = isJiraServer ? `/rest/api/2/issue/${key}/worklog` : `/rest/api/3/issue/${key}/worklog`;
+    const resp = await req.jiraClient!.get(endpoint);
     const data = resp.data || { total: 0, worklogs: [] };
     
     // Enrich worklog comments with readable text if needed
     const enrichedWorklogs = (data.worklogs || []).map((w: any) => ({
       ...w,
-      commentText: adfToText(w.comment)
+      commentText: typeof w.comment === 'string' ? w.comment : adfToText(w.comment)
     }));
 
     res.json({
@@ -1013,7 +1228,8 @@ router.get('/issues/:key/worklog', async (req: AuthenticatedJiraRequest, res: Re
       worklogs: enrichedWorklogs
     });
   } catch (error: any) {
-    res.status(error.response?.status || 500).json({ error: error.response?.data || error.message });
+    const formatted = formatJiraError(error);
+    res.status(error.response?.status || 500).json(formatted);
   }
 });
 
@@ -1048,13 +1264,16 @@ router.post('/issues/:key/worklog', async (req: AuthenticatedJiraRequest, res: R
       started: startedDateStr
     };
 
-    if (comment && typeof comment === 'string' && comment.trim()) {
-      payload.comment = textToAdf(comment.trim());
-    } else if (comment && typeof comment === 'object' && comment.type === 'doc') {
-      payload.comment = comment;
+    const isJiraServer = !req.jiraSession?.base_url?.includes('.atlassian.net');
+    if (comment) {
+      if (isJiraServer) {
+        payload.comment = typeof comment === 'string' ? comment.trim() : adfToText(comment);
+      } else {
+        payload.comment = typeof comment === 'object' && comment.type === 'doc' ? comment : textToAdf(comment.trim());
+      }
     }
 
-    let url = `/rest/api/3/issue/${key}/worklog`;
+    let url = isJiraServer ? `/rest/api/2/issue/${key}/worklog` : `/rest/api/3/issue/${key}/worklog`;
     if (adjustEstimate) {
       url += `?adjustEstimate=${encodeURIComponent(adjustEstimate)}`;
     }

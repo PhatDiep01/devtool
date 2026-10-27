@@ -13,6 +13,7 @@ import {
   adfToText,
   formatJiraError
 } from '../services/jira-utils';
+import { deepSanitizeForJiraServer } from '../middleware/jira-auth';
 
 let testServer: http.Server;
 let port: number;
@@ -391,6 +392,16 @@ describe('Jira Dedicated Authentication & Public Handover Docs API Test Suite', 
       assert.equal(res.data.success, false);
     });
 
+    it('POST /api/jira/auth/login should reject basic auth without username or password with 400', async () => {
+      const res1 = await makeRequest('/api/jira/auth/login', { method: 'POST' }, { authType: 'basic', password: '123' });
+      assert.equal(res1.status, 400);
+      assert.equal(res1.data.success, false);
+
+      const res2 = await makeRequest('/api/jira/auth/login', { method: 'POST' }, { authType: 'basic', username: 'user1' });
+      assert.equal(res2.status, 400);
+      assert.equal(res2.data.success, false);
+    });
+
     it('POST /api/jira/auth/login should reject non-existent site with 400 or 401', async () => {
       const res = await makeRequest('/api/jira/auth/login', { method: 'POST' }, {
         baseUrl: 'https://non-existent-jira-site-test-12345.atlassian.net',
@@ -582,6 +593,30 @@ describe('Jira Dedicated Authentication & Public Handover Docs API Test Suite', 
       // 3. Fallback error message
       const err3 = new Error('Network timeout connecting to Jira');
       assert.equal(formatJiraError(err3).message, 'Network timeout connecting to Jira');
+    });
+
+    it('deepSanitizeForJiraServer should flatten nested ADF objects and string fields for Jira Server', () => {
+      const payloadWithAdf = {
+        body: textToAdf('Comment text from editor'),
+        fields: {
+          description: textToAdf('Issue description text'),
+          summary: 'Normal string'
+        },
+        update: {
+          comment: [
+            { add: { body: textToAdf('Nested comment') } }
+          ]
+        }
+      };
+
+      const sanitized = deepSanitizeForJiraServer(payloadWithAdf);
+      assert.equal(typeof sanitized.body, 'string');
+      assert.ok(sanitized.body.includes('Comment text from editor'));
+      assert.equal(typeof sanitized.fields.description, 'string');
+      assert.ok(sanitized.fields.description.includes('Issue description text'));
+      assert.equal(typeof sanitized.update.comment[0].add.body, 'string');
+      assert.ok(sanitized.update.comment[0].add.body.includes('Nested comment'));
+      assert.equal(sanitized.fields.summary, 'Normal string');
     });
   });
 });

@@ -5,6 +5,7 @@ import {
   ExternalLink, 
   AlertCircle, 
   Lock, 
+  User,
   Eye, 
   EyeOff, 
   Globe, 
@@ -23,10 +24,20 @@ export const JiraLoginPage: React.FC<{ onSuccess?: () => void }> = ({ onSuccess 
   const navigate = useNavigate();
   const { login, isLoading, error, clearError, configInfo, fetchConfigInfo } = useJiraAuthStore();
 
+  const [authTab, setAuthTab] = useState<'token' | 'basic'>('token');
   const [baseUrl, setBaseUrl] = useState('https://task.ascvn.com.vn');
   const [showUrlEdit, setShowUrlEdit] = useState(false);
+
+  // Tab 1: Token / PAT
   const [apiToken, setApiToken] = useState('');
   const [showToken, setShowToken] = useState(false);
+
+  // Tab 2: Username & Password (Basic Auth)
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+
+  // Common options
   const [rememberMe, setRememberMe] = useState(false);
 
   useEffect(() => {
@@ -37,7 +48,17 @@ export const JiraLoginPage: React.FC<{ onSuccess?: () => void }> = ({ onSuccess 
     if (configInfo?.configuredBaseUrl) {
       setBaseUrl(configInfo.configuredBaseUrl);
     }
+    if (configInfo?.authType === 'basic') {
+      setAuthTab('basic');
+    }
   }, [configInfo]);
+
+  const handleSwitchTab = (tab: 'token' | 'basic') => {
+    if (authTab !== tab) {
+      setAuthTab(tab);
+      clearError();
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -53,25 +74,55 @@ export const JiraLoginPage: React.FC<{ onSuccess?: () => void }> = ({ onSuccess 
       setBaseUrl(cleanUrl);
     }
 
-    if (!apiToken.trim()) {
-      toast.error('Vui lòng nhập Jira API Token hoặc Personal Access Token');
-      return;
-    }
+    if (authTab === 'token') {
+      if (!apiToken.trim()) {
+        toast.error('Vui lòng nhập Jira API Token hoặc Personal Access Token');
+        return;
+      }
 
-    const success = await login({
-      baseUrl: cleanUrl,
-      apiToken: apiToken.trim(),
-      authType: 'bearer',
-      rememberMe
-    });
+      const success = await login({
+        baseUrl: cleanUrl,
+        apiToken: apiToken.trim(),
+        authType: 'bearer',
+        rememberMe
+      });
 
-    if (success) {
-      toast.success(
-        rememberMe 
-          ? 'Đã kết nối Jira và lưu token vào SQLite!' 
-          : 'Đã kết nối Jira (phiên tạm thời 1 phiên làm việc)!'
-      );
-      onSuccess?.();
+      if (success) {
+        toast.success(
+          rememberMe 
+            ? 'Đã kết nối Jira và lưu thông tin vào SQLite!' 
+            : 'Đã kết nối Jira (phiên làm việc tạm thời)!'
+        );
+        onSuccess?.();
+      }
+    } else {
+      if (!username.trim()) {
+        toast.error('Vui lòng nhập Tên đăng nhập (Username) hoặc Email');
+        return;
+      }
+      if (!password.trim()) {
+        toast.error('Vui lòng nhập Mật khẩu Jira');
+        return;
+      }
+
+      const success = await login({
+        baseUrl: cleanUrl,
+        username: username.trim(),
+        email: username.trim(),
+        password: password.trim(),
+        apiToken: password.trim(),
+        authType: 'basic',
+        rememberMe
+      });
+
+      if (success) {
+        toast.success(
+          rememberMe 
+            ? 'Đã kết nối Jira bằng tài khoản và lưu thông tin vào SQLite!' 
+            : 'Đã kết nối Jira (phiên làm việc tạm thời)!'
+        );
+        onSuccess?.();
+      }
     }
   };
 
@@ -83,7 +134,7 @@ export const JiraLoginPage: React.FC<{ onSuccess?: () => void }> = ({ onSuccess 
     });
 
     if (success) {
-      toast.success('Đã kết nối thành công với Jira qua Token lưu trên máy!');
+      toast.success('Đã kết nối thành công với Jira qua thông tin lưu trên máy!');
       onSuccess?.();
     }
   };
@@ -107,8 +158,41 @@ export const JiraLoginPage: React.FC<{ onSuccess?: () => void }> = ({ onSuccess 
             Đăng Nhập Jira
           </h2>
           <p className="text-xs sm:text-sm text-muted-foreground max-w-sm mx-auto leading-relaxed">
-            Chỉ cần nhập <b>Jira API Token</b> (hoặc Personal Access Token) để truy cập Kanban Board, Sprint Hub và Log Work.
+            {authTab === 'token' ? (
+              <>Chỉ cần nhập <b>Jira API Token</b> (hoặc Personal Access Token) để truy cập Kanban Board, Sprint Hub và Log Work.</>
+            ) : (
+              <>Đăng nhập bằng <b>Tên tài khoản (Username)</b> và <b>Mật khẩu</b> Jira của bạn.</>
+            )}
           </p>
+        </div>
+
+        {/* Tab Switcher: Token vs Username/Password */}
+        <div className="grid grid-cols-2 p-1.5 rounded-2xl bg-muted/70 border border-border/70 gap-1.5 select-none">
+          <button
+            type="button"
+            onClick={() => handleSwitchTab('token')}
+            className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs sm:text-sm font-bold transition-all ${
+              authTab === 'token'
+                ? 'bg-card text-foreground shadow-sm border border-border/80'
+                : 'text-muted-foreground hover:text-foreground hover:bg-card/40'
+            }`}
+          >
+            <KeyRound className={`w-4 h-4 ${authTab === 'token' ? 'text-blue-500' : ''}`} />
+            <span>API Token / PAT</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleSwitchTab('basic')}
+            className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs sm:text-sm font-bold transition-all ${
+              authTab === 'basic'
+                ? 'bg-card text-foreground shadow-sm border border-border/80'
+                : 'text-muted-foreground hover:text-foreground hover:bg-card/40'
+            }`}
+          >
+            <User className={`w-4 h-4 ${authTab === 'basic' ? 'text-blue-500' : ''}`} />
+            <span>Tài Khoản & Mật Khẩu</span>
+          </button>
         </div>
 
         {/* Workspace Fast-Pass Notice if already configured on server */}
@@ -117,7 +201,7 @@ export const JiraLoginPage: React.FC<{ onSuccess?: () => void }> = ({ onSuccess 
             <div className="flex items-center gap-2.5 text-blue-600 dark:text-blue-400">
               <Building2 className="w-4 h-4 shrink-0" />
               <div>
-                <span className="font-bold">Đã có Token lưu trên máy: </span>
+                <span className="font-bold">Đã có thông tin lưu trên máy: </span>
                 <span className="font-mono">{configInfo.configuredBaseUrl}</span>
               </div>
             </div>
@@ -145,11 +229,34 @@ export const JiraLoginPage: React.FC<{ onSuccess?: () => void }> = ({ onSuccess 
         {error && (
           <div className="p-4 rounded-2xl bg-destructive/10 border border-destructive/30 text-destructive text-xs flex items-start gap-2.5 animate-in shake">
             <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-            <div className="flex-1 font-medium">{error}</div>
+            <div className="flex-1 font-medium space-y-2">
+              <p>{error}</p>
+              {error.toLowerCase().includes('captcha') && (
+                <div className="flex flex-wrap gap-2 pt-1">
+                  <a
+                    href={`${baseUrl.replace(/\/+$/, '')}/login.jsp`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-destructive text-white hover:bg-destructive/90 text-[11px] font-bold transition shadow-xs"
+                  >
+                    <span>Mở Jira giải CAPTCHA</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                  <button
+                    type="button"
+                    onClick={() => handleSwitchTab('token')}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-card border border-destructive/30 text-destructive hover:bg-destructive/10 text-[11px] font-bold transition"
+                  >
+                    <KeyRound className="w-3 h-3" />
+                    <span>Dùng Token (Không bị CAPTCHA)</span>
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         )}
 
-        {/* Main Login Form - ONLY REQUIRES JIRA TOKEN */}
+        {/* Main Login Form */}
         <form onSubmit={handleSubmit} className="space-y-4">
           
           {/* Jira Server URL Display & Toggle */}
@@ -189,47 +296,101 @@ export const JiraLoginPage: React.FC<{ onSuccess?: () => void }> = ({ onSuccess 
             )}
           </div>
 
-          {/* Jira API Token / Access Token Input */}
-          <div className="space-y-1.5">
-            <div className="flex flex-wrap gap-1 items-center justify-between">
-              <label className="text-xs font-bold text-foreground flex items-center gap-1.5">
-                <KeyRound className="w-3.5 h-3.5 text-blue-500" />
-                <span>Jira API Token / Personal Access Token (PAT)</span>
-              </label>
-              <a
-                href={`${baseUrl.replace(/\/+$/, '')}/secure/ViewProfile.jspa`}
-                target="_blank"
-                rel="noreferrer"
-                className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline inline-flex items-center gap-0.5"
-                title="Mở hồ sơ cá nhân Jira để tạo Personal Access Token"
-              >
-                <span>Tạo Token</span>
-                <ExternalLink className="w-3 h-3" />
-              </a>
+          {/* TAB 1: TOKEN / PAT */}
+          {authTab === 'token' && (
+            <div className="space-y-1.5 animate-in fade-in duration-150">
+              <div className="flex flex-wrap gap-1 items-center justify-between">
+                <label className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                  <KeyRound className="w-3.5 h-3.5 text-blue-500" />
+                  <span>Jira API Token / Personal Access Token (PAT)</span>
+                </label>
+                <a
+                  href={`${baseUrl.replace(/\/+$/, '')}/secure/ViewProfile.jspa`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline inline-flex items-center gap-0.5"
+                  title="Mở hồ sơ cá nhân Jira để tạo Personal Access Token"
+                >
+                  <span>Tạo Token</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              </div>
+              <div className="relative">
+                <input
+                  type={showToken ? 'text' : 'password'}
+                  value={apiToken}
+                  onChange={(e) => setApiToken(e.target.value)}
+                  placeholder="Nhập Jira API Token hoặc Bearer PAT..."
+                  required
+                  autoFocus
+                  className="w-full bg-background border border-border rounded-xl pl-3.5 pr-10 py-2.5 text-sm focus:outline-none focus:border-primary font-mono text-xs transition"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowToken(!showToken)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-1 transition"
+                  aria-label={showToken ? 'Ẩn token' : 'Hiện token'}
+                >
+                  {showToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                Chỉ cần nhập Token, hệ thống sẽ tự động xác thực và nhận diện người dùng tương ứng.
+              </p>
             </div>
-            <div className="relative">
-              <input
-                type={showToken ? 'text' : 'password'}
-                value={apiToken}
-                onChange={(e) => setApiToken(e.target.value)}
-                placeholder="Nhập Jira API Token hoặc Bearer PAT..."
-                required
-                autoFocus
-                className="w-full bg-background border border-border rounded-xl pl-3.5 pr-10 py-2.5 text-sm focus:outline-none focus:border-primary font-mono text-xs transition"
-              />
-              <button
-                type="button"
-                onClick={() => setShowToken(!showToken)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-1 transition"
-                aria-label={showToken ? 'Ẩn token' : 'Hiện token'}
-              >
-                {showToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-              </button>
+          )}
+
+          {/* TAB 2: USERNAME & PASSWORD */}
+          {authTab === 'basic' && (
+            <div className="space-y-3.5 animate-in fade-in duration-150">
+              {/* Username / Email Field */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                  <User className="w-3.5 h-3.5 text-blue-500" />
+                  <span>Tên đăng nhập (Username hoặc Email)</span>
+                </label>
+                <input
+                  type="text"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  placeholder="Nhập tên đăng nhập hoặc email Jira..."
+                  autoComplete="username"
+                  required
+                  autoFocus
+                  className="w-full bg-background border border-border rounded-xl px-3.5 py-2.5 text-xs sm:text-sm focus:outline-none focus:border-primary transition"
+                />
+              </div>
+
+              {/* Password Field */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                  <Lock className="w-3.5 h-3.5 text-blue-500" />
+                  <span>Mật khẩu Jira (Password)</span>
+                </label>
+                <div className="relative">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="Nhập mật khẩu Jira của bạn..."
+                    required
+                    className="w-full bg-background border border-border rounded-xl pl-3.5 pr-10 py-2.5 text-xs sm:text-sm focus:outline-none focus:border-primary transition"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-1 transition"
+                    aria-label={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Xác thực trực tiếp bằng tài khoản qua giao thức Basic Auth an toàn.
+                </p>
+              </div>
             </div>
-            <p className="text-[11px] text-muted-foreground">
-              Chỉ cần nhập Token, hệ thống sẽ tự động xác thực và nhận diện người dùng tương ứng.
-            </p>
-          </div>
+          )}
 
           {/* Remember Me Checkbox with Explicit Clear Storage Description */}
           <div className="p-3.5 rounded-2xl bg-accent/40 border border-border/60 space-y-1.5">
@@ -245,11 +406,11 @@ export const JiraLoginPage: React.FC<{ onSuccess?: () => void }> = ({ onSuccess 
                 <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
                   {rememberMe ? (
                     <span className="text-emerald-600 dark:text-emerald-400 font-medium">
-                      ✓ Đã chọn: Token sẽ được lưu vào SQLite trên máy và duy trì đăng nhập (30 ngày).
+                      ✓ Đã chọn: Thông tin sẽ được lưu vào SQLite trên máy và duy trì phiên đăng nhập (30 ngày).
                     </span>
                   ) : (
                     <span>
-                      Không chọn: Token <b>sẽ KHÔNG lưu vào SQLite</b>. Phiên đăng nhập sẽ kết thúc sau 1 phiên làm việc hoặc khi đóng trình duyệt.
+                      Không chọn: Thông tin <b>sẽ KHÔNG lưu vào SQLite</b>. Phiên đăng nhập sẽ kết thúc sau 1 phiên làm việc (8 tiếng) hoặc khi đóng trình duyệt.
                     </span>
                   )}
                 </p>
@@ -270,7 +431,9 @@ export const JiraLoginPage: React.FC<{ onSuccess?: () => void }> = ({ onSuccess 
               </>
             ) : (
               <>
-                <span>Đăng Nhập Jira</span>
+                <span>
+                  {authTab === 'token' ? 'Đăng Nhập bằng Token' : 'Đăng Nhập bằng Tài Khoản'}
+                </span>
                 <ArrowRight className="w-4 h-4" />
               </>
             )}

@@ -14,9 +14,13 @@ export const ImportScreen: React.FC = () => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    docsApi.getModules().then(res => {
-      setModules(res.data);
-    });
+    docsApi.getModules()
+      .then(res => {
+        setModules(Array.isArray(res?.data) ? res.data : []);
+      })
+      .catch(() => {
+        setModules([]);
+      });
   }, []);
 
   const processFile = (selected: File) => {
@@ -98,7 +102,7 @@ export const ImportScreen: React.FC = () => {
               className="w-full bg-background border border-border rounded-xl px-3.5 py-2 text-sm focus:outline-none focus:border-primary font-medium"
             >
               <option value="">✨ Tự động nhận diện nhóm từ Frontmatter (.md)</option>
-              {modules.map((m) => (
+              {(Array.isArray(modules) ? modules : []).map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.icon || '📁'} {m.name}
                 </option>

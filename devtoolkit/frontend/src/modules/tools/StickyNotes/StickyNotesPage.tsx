@@ -23,6 +23,18 @@ import { StickyNoteEditorModal } from './StickyNoteEditorModal';
 import { StickyNoteTrashModal } from './StickyNoteTrashModal';
 import { StickyNote, StickyNoteSortBy, StickyNoteSortOrder } from '@/types';
 
+// Safe Date Formatter helper
+const formatDisplayDate = (val?: string | Date | null): string => {
+  if (!val) return 'Mới đây';
+  const d = new Date(val);
+  if (isNaN(d.getTime())) return 'Mới đây';
+  return d.toLocaleDateString('vi-VN', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric'
+  });
+};
+
 export const StickyNotesPage: React.FC = () => {
   const {
     notes,
@@ -287,7 +299,7 @@ export const StickyNotesPage: React.FC = () => {
                 <div>
                   <div className="flex items-start justify-between gap-2 mb-2">
                     <h3 className="font-bold text-sm sm:text-base text-foreground line-clamp-1 group-hover:text-primary transition-colors">
-                      {note.title}
+                      {note.title?.trim() || 'New Note'}
                     </h3>
 
                     <button
@@ -305,8 +317,8 @@ export const StickyNotesPage: React.FC = () => {
                   </div>
 
                   {/* Preview Text */}
-                  <p className="text-xs text-muted-foreground line-clamp-4 font-mono leading-relaxed mb-4">
-                    {note.preview || '(Chưa có nội dung)'}
+                  <p className="text-xs text-muted-foreground line-clamp-4 font-mono leading-relaxed mb-4 break-words">
+                    {(note.preview && note.preview.trim()) || (note.content && note.content.trim().slice(0, 160)) || '(Chưa có nội dung)'}
                   </p>
                 </div>
 
@@ -315,7 +327,7 @@ export const StickyNotesPage: React.FC = () => {
                   <div className="flex items-center gap-1.5 truncate">
                     <Clock className="w-3 h-3 shrink-0" />
                     <span className="truncate">
-                      {new Date(note.updated_at).toLocaleDateString('vi-VN')}
+                      {formatDisplayDate(note.updated_at)}
                     </span>
                   </div>
 

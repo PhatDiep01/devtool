@@ -88,6 +88,15 @@ function runMigrations(database: any): void {
       category TEXT DEFAULT 'general'
     );
 
+    -- Ensure default Jira base URL is task.ascvn.com.vn
+    INSERT OR IGNORE INTO settings (key, value, category) 
+    VALUES ('jira_base_url', 'https://task.ascvn.com.vn', 'jira');
+
+    -- Ensure default backend production domain is permanently set to https://devtool.phatdiep.io.vn
+    INSERT INTO settings (key, value, category) 
+    VALUES ('backend_tunnel_url', 'https://devtool.phatdiep.io.vn', 'network')
+    ON CONFLICT(key) DO UPDATE SET value = 'https://devtool.phatdiep.io.vn' WHERE value LIKE '%trycloudflare.com%' OR value = '';
+
     CREATE TABLE IF NOT EXISTS jira_sessions (
       token TEXT PRIMARY KEY,
       user_email TEXT NOT NULL,
@@ -155,6 +164,22 @@ function runMigrations(database: any): void {
     CREATE INDEX IF NOT EXISTS idx_bugs_type ON bugs(type);
     CREATE INDEX IF NOT EXISTS idx_bugs_us_key ON bugs(us_key);
     CREATE INDEX IF NOT EXISTS idx_bugs_updated_at ON bugs(updated_at DESC);
+
+    -- Bug Image Annotations Table
+    CREATE TABLE IF NOT EXISTS bug_annotations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      bug_id INTEGER NOT NULL,
+      image_id TEXT NOT NULL,
+      annotations TEXT NOT NULL DEFAULT '[]',
+      version INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (bug_id) REFERENCES bugs(id) ON DELETE CASCADE,
+      UNIQUE(bug_id, image_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_bug_annotations_bug_id ON bug_annotations(bug_id);
+    CREATE INDEX IF NOT EXISTS idx_bug_annotations_image_id ON bug_annotations(image_id);
 
     -- Seed essential modules
     INSERT OR IGNORE INTO modules (name, slug, icon, sort_order) VALUES ('Survey Management', 'survey-management', '📊', 1);

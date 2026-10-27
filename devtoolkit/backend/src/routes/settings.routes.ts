@@ -121,58 +121,126 @@ router.post('/jira/test', async (req: Request, res: Response) => {
   }
 });
 
-// GET /api/settings/storage - Storage stats
+// GET /api/settings/storage - Comprehensive storage metrics
 router.get('/storage', (req: Request, res: Response) => {
   try {
     const dataDir = getDataDir();
-    const docsDir = path.join(dataDir, 'docs');
-    const imagesDir = path.join(dataDir, 'images');
+    const db = getDb();
 
-    function getDirStats(dir: string) {
+    function getDirStats(dir: string, ignoreTrash = false) {
       let count = 0;
       let totalBytes = 0;
       if (!fs.existsSync(dir)) return { count, totalBytes };
 
       function walk(current: string) {
-        const files = fs.readdirSync(current);
-        for (const file of files) {
-          const fp = path.join(current, file);
-          const stat = fs.statSync(fp);
-          if (stat.isDirectory()) {
-            walk(fp);
-          } else {
-            count++;
-            totalBytes += stat.size;
+        try {
+          const entries = fs.readdirSync(current, { withFileTypes: true });
+          for (const entry of entries) {
+            const fp = path.join(current, entry.name);
+            if (entry.isDirectory()) {
+              if (ignoreTrash && entry.name === '.trash') continue;
+              walk(fp);
+            } else if (entry.isFile()) {
+              try {
+                const stat = fs.statSync(fp);
+                count++;
+                totalBytes += stat.size;
+              } catch {}
+            }
           }
-        }
+        } catch {}
       }
       walk(dir);
       return { count, totalBytes };
     }
 
-    const docsStats = getDirStats(docsDir);
-    const imagesStats = getDirStats(imagesDir);
-
     const formatBytes = (bytes: number) => {
-      if (bytes === 0) return '0 B';
+      if (!bytes || bytes === 0) return '0 B';
       const k = 1024;
       const sizes = ['B', 'KB', 'MB', 'GB'];
       const i = Math.floor(Math.log(bytes) / Math.log(k));
       return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
     };
 
+    // 1. Docs, Templates & Schemas
+    const docsDir = path.join(dataDir, 'docs');
+    const templatesDir = path.join(dataDir, 'templates');
+    const schemasDir = path.join(dataDir, 'schemas');
+    const docsStats = getDirStats(docsDir);
+    const templateStats = getDirStats(templatesDir);
+    const schemaStats = getDirStats(schemasDir);
+
+    let dbScreensCount = 0;
+    let dbModulesCount = 0;
+    try {
+      const scr = db.prepare('SELECT COUNT(*) as cnt FROM screens').get() as any;
+      dbScreensCount = Number(scr?.cnt || 0);
+      const mod = db.prepare('SELECT COUNT(*) as cnt FROM modules').get() as any;
+      dbModulesCount = Number(mod?.cnt || 0);
+    } catch {}
+
+    const totalDocsCount = docsStats.count + templateStats.count + schemaStats.count + dbScreensCount;
+    const totalDocsBytes = docsStats.totalBytes + templateStats.totalBytes + schemaStats.totalBytes;
+
+    // 2. Images & Uploaded Files (both generic images and bug attachments)
+    const imagesDir = path.join(dataDir, 'images');
+    const bugFilesDir = path.join(dataDir, 'bug_files');
+    const imagesStats = getDirStats(imagesDir);
+    const bugFilesStats = getDirStats(bugFilesDir);
+
+    const totalImagesCount = imagesStats.count + bugFilesStats.count;
+    const totalImagesBytes = imagesStats.totalBytes + bugFilesStats.totalBytes;
+
+    // 3. Sticky Notes
+    const stickyNotesDir = path.join(dataDir, 'sticky_notes');
+    const stickyStats = getDirStats(stickyNotesDir, true);
+
+    // 4. Database Files
+    let dbTotalBytes = 0;
+    ['devtoolkit.db', 'devtoolkit.db-wal', 'devtoolkit.db-shm'].forEach((name) => {
+      const p = path.join(dataDir, name);
+      if (fs.existsSync(p)) {
+        try {
+          dbTotalBytes += fs.statSync(p).size;
+        } catch {}
+      }
+    });
+
+    // 5. Overall Persistent Storage
+    const overallStats = getDirStats(dataDir);
+
     res.json({
+      dataDir,
       docsPath: docsDir,
       imagesPath: imagesDir,
-      totalDocs: docsStats.count,
-      totalImages: imagesStats.count,
-      docsSize: formatBytes(docsStats.totalBytes),
-      imagesSize: formatBytes(imagesStats.totalBytes),
-      totalSize: formatBytes(docsStats.totalBytes + imagesStats.totalBytes)
+      bugFilesPath: bugFilesDir,
+      // Backward compatible fields
+      totalDocs: totalDocsCount,
+      totalImages: totalImagesCount,
+      docsSize: formatBytes(totalDocsBytes),
+      imagesSize: formatBytes(totalImagesBytes),
+      totalSize: formatBytes(overallStats.totalBytes),
+      // Detailed breakdown
+      totalStickyNotes: stickyStats.count,
+      stickyNotesSize: formatBytes(stickyStats.totalBytes),
+      databaseSize: formatBytes(dbTotalBytes),
+      overallFileCount: overallStats.count,
+      dbScreensCount,
+      dbModulesCount,
+      bugFilesCount: bugFilesStats.count,
+      genericImagesCount: imagesStats.count
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
+});
+
+// POST /api/settings/restart - Gracefully exit process so NSSM automatically relaunches updated build
+router.post('/restart', (req: Request, res: Response) => {
+  res.json({ success: true, message: 'Server is restarting...' });
+  setTimeout(() => {
+    process.exit(0);
+  }, 500);
 });
 
 export default router;

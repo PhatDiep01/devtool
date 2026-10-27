@@ -25,24 +25,98 @@ import type {
   BugItem,
   BugListResponse,
   BugAttachment,
+  BugImageAnnotationRecord,
+  AnnotationItem,
   StickyNote,
   StickyNoteListResponse,
   StickyNoteCreatePayload,
   StickyNoteUpdatePayload
 } from '@/types';
 
+/**
+ * Checks if the frontend is currently running on the same host/origin as the backend Express server.
+ * This includes:
+ * - Localhost & loopback (127.0.0.1, localhost)
+ * - Private LAN IP ranges (192.168.x.x, 10.x.x.x, 172.16-31.x.x, *.local)
+ * - Direct Cloudflare Tunnel domain (*.trycloudflare.com, *.cfargotunnel.com)
+ */
+export const isSameOriginBackend = (): boolean => {
+  if (typeof window === 'undefined') return true;
+  const host = window.location.hostname.toLowerCase();
+
+  // Localhost / Loopback
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') {
+    return true;
+  }
+
+  // Private LAN IPs (e.g. mobile phone connected to PC via Wi-Fi)
+  if (
+    host.startsWith('192.168.') ||
+    host.startsWith('10.') ||
+    /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host) ||
+    host.endsWith('.local')
+  ) {
+    return true;
+  }
+
+  // Direct Cloudflare Tunnel URL or custom domain (e.g. devtool.phatdiep.io.vn or *.trycloudflare.com)
+  if (
+    host.endsWith('.trycloudflare.com') || 
+    host.endsWith('.cfargotunnel.com') ||
+    host.endsWith('phatdiep.io.vn')
+  ) {
+    return true;
+  }
+
+  // Any domain other than known third-party static SPA CDNs is served directly by our backend
+  const isKnownStaticSpaHost = 
+    host.endsWith('.web.app') || 
+    host.endsWith('.firebaseapp.com') || 
+    host.endsWith('.github.io') ||
+    host.endsWith('.vercel.app') ||
+    host.endsWith('.netlify.app');
+
+  if (!isKnownStaticSpaHost) {
+    return true;
+  }
+
+  return false;
+};
+
 // Helper to retrieve the current active API base URL (supports build-time ENV and dynamic runtime LocalStorage override)
 export const getActiveApiUrl = (): string => {
+  // When developing or running on same-origin backend (localhost, LAN, or directly on Cloudflare Tunnel domain like devtool.phatdiep.io.vn),
+  // always default to relative path '' so requests hit the local Express server directly.
+  if (isSameOriginBackend()) {
+    return '';
+  }
+
+  // If the user explicitly configured an override in localStorage (e.g. while on Firebase Hosting), respect it
   try {
     const localOverride = localStorage.getItem('custom_api_url');
     if (localOverride && localOverride.trim()) {
-      return localOverride.trim().replace(/\/+$/, '');
+      let url = localOverride.trim().replace(/\/+$/, '');
+      // Purge any old ephemeral trycloudflare.com tunnel
+      if (url.includes('.trycloudflare.com')) {
+        localStorage.removeItem('custom_api_url');
+      } else {
+        if (!/^https?:\/\//i.test(url) && !url.startsWith('/')) {
+          url = `https://${url}`;
+        }
+        return url;
+      }
     }
   } catch (e) {
     // ignore
   }
+
+  // Fallback to build-time environment variable or permanent production domain
   // @ts-ignore
-  return (import.meta.env?.VITE_API_URL || '').replace(/\/+$/, '');
+  let envUrl = (import.meta.env?.VITE_API_URL || 'https://devtool.phatdiep.io.vn').trim().replace(/\/+$/, '');
+  if (envUrl && !/^https?:\/\//i.test(envUrl) && !envUrl.startsWith('/')) {
+    envUrl = `https://${envUrl}`;
+  }
+  return envUrl;
 };
 
 // @ts-ignore
@@ -60,6 +134,24 @@ export const resolveApiUrl = (path: string): string => {
   const cleanPath = path.startsWith('/') ? path : `/${path}`;
   const baseUrl = getActiveApiUrl();
   return baseUrl ? `${baseUrl}${cleanPath}` : cleanPath;
+};
+
+/**
+ * Proxies Jira avatar, issue type, and priority images through the backend
+ * to bypass internal LAN IP restrictions (e.g. task.ascvn.com.vn on 192.168.0.240)
+ * and Chrome Private Network Access / CORS restrictions.
+ */
+export const getJiraProxyImageUrl = (url?: string | null): string => {
+  if (!url) return '';
+  if (url.startsWith('data:') || url.startsWith('blob:')) return url;
+
+  let jiraToken = '';
+  try {
+    jiraToken = localStorage.getItem('jira_session_token') || sessionStorage.getItem('jira_session_token') || '';
+  } catch {}
+
+  const tokenParam = jiraToken ? `&jira_token=${encodeURIComponent(jiraToken)}` : '';
+  return resolveApiUrl(`/api/jira/proxy/image?url=${encodeURIComponent(url)}${tokenParam}`);
 };
 
 const api = axios.create({
@@ -89,7 +181,26 @@ api.interceptors.request.use((config) => {
 });
 
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    // Detect SPA fallback HTML response when calling API endpoints
+    const contentType = String(response.headers?.['content-type'] || '').toLowerCase();
+    const isApiUrl = Boolean(response.config?.url && response.config.url.includes('/api/'));
+    if (
+      isApiUrl &&
+      typeof response.data === 'string' &&
+      (contentType.includes('text/html') ||
+        response.data.trim().startsWith('<!doctype') ||
+        response.data.trim().startsWith('<html'))
+    ) {
+      const error: any = new Error(
+        'Backend API chưa kết nối hoặc máy chủ trả về mã HTML thay vì dữ liệu JSON. Vui lòng kiểm tra cấu hình URL Backend trong phần Cài đặt.'
+      );
+      error.isHtmlFallback = true;
+      error.response = response;
+      return Promise.reject(error);
+    }
+    return response;
+  },
   (error) => {
     if (error.response?.status === 401) {
       if (error.config?.url?.includes('/api/jira') && !error.config?.url?.includes('/api/jira/auth/login')) {
@@ -204,7 +315,7 @@ export const filesApi = {
 };
 
 export const bugsApi = {
-  getAll: (params?: { search?: string; status?: string; type?: string; severity?: string }) =>
+  getAll: (params?: { search?: string; status?: string; type?: string; severity?: string; has_annotations?: string }) =>
     api.get<BugListResponse>('/api/bugs', { params }),
   getById: (id: number) => api.get<BugItem>(`/api/bugs/${id}`),
   create: (data: Partial<BugItem>) => api.post<BugItem>('/api/bugs', data),
@@ -216,6 +327,17 @@ export const bugsApi = {
     api.post<BugAttachment>('/api/bugs/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     }),
+};
+
+export const bugAnnotationsApi = {
+  getAll: (bugId: number) => 
+    api.get<Record<string, BugImageAnnotationRecord>>(`/api/bugs/${bugId}/annotations`),
+  getByImage: (bugId: number, imageId: string) => 
+    api.get<BugImageAnnotationRecord>(`/api/bugs/${bugId}/annotations/${imageId}`),
+  save: (bugId: number, imageId: string, payload: { annotations: AnnotationItem[]; version?: number; force?: boolean }) => 
+    api.put<BugImageAnnotationRecord>(`/api/bugs/${bugId}/annotations/${imageId}`, payload),
+  delete: (bugId: number, imageId: string) => 
+    api.delete<{ success: boolean; bug_id: number; image_id: string }>(`/api/bugs/${bugId}/annotations/${imageId}`),
 };
 
 export const settingsApi = {

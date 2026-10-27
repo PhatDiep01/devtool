@@ -23,12 +23,11 @@ interface AgentPromptsModalProps {
 export const AgentPromptsModal: React.FC<AgentPromptsModalProps> = ({ isOpen, onClose }) => {
   const [activeTab, setActiveTab] = useState<string>('designer');
   const [copiedRole, setCopiedRole] = useState<string | null>(null);
+  const [isCopiedAll, setIsCopiedAll] = useState<boolean>(false);
 
   if (!isOpen) return null;
 
   const currentRole = AGENT_ROLES.find(r => r.id === activeTab) || AGENT_ROLES[0];
-
-  const [isCopiedAll, setIsCopiedAll] = useState<boolean>(false);
 
   const handleCopyPrompt = async (roleId: string, promptText: string) => {
     const success = await copyToClipboard(promptText);
@@ -75,7 +74,6 @@ export const AgentPromptsModal: React.FC<AgentPromptsModalProps> = ({ isOpen, on
   return (
     <div 
       className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6 animate-in fade-in duration-200"
-      onClick={onClose}
     >
       <div 
         className="w-full max-w-4xl bg-card border border-border rounded-2xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden"

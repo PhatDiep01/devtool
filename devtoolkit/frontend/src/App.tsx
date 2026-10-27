@@ -20,6 +20,7 @@ import { TextFormatterPage } from './modules/tools/TextFormatter/TextFormatterPa
 import { CompareTextPage } from './modules/tools/CompareText/CompareTextPage';
 import { StickyNotesPage } from './modules/tools/StickyNotes/StickyNotesPage';
 import { useThemeStore } from './stores/theme.store';
+import { PageTitleManager } from './utils/usePageTitle';
 
 export const App: React.FC = () => {
   const { theme } = useThemeStore();
@@ -35,6 +36,7 @@ export const App: React.FC = () => {
 
   return (
     <>
+      <PageTitleManager />
       <Routes>
         <Route element={<AppShell />}>
           <Route index element={<Navigate to="/docs" replace />} />

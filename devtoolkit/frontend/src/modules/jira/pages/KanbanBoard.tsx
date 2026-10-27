@@ -27,6 +27,7 @@ import { CreateIssueModal } from '../components/CreateIssueModal';
 import { LogWorkModal } from '../components/LogWorkModal';
 import { SearchableSelect, SelectOption } from '../../../components/ui';
 import { toast } from 'react-hot-toast';
+import { usePageTitle } from '../../../utils/usePageTitle';
 
 export interface DynamicBoardColumn {
   id: string;
@@ -39,6 +40,10 @@ export const KanbanBoard: React.FC = () => {
   const navigate = useNavigate();
   const [sprints, setSprints] = useState<JiraSprint[]>([]);
   const [selectedSprintId, setSelectedSprintId] = useState<string>('');
+
+  const currentSprint = sprints.find(s => String(s.id) === selectedSprintId);
+  const boardTitle = currentSprint ? `${currentSprint.name} - Kanban Board` : 'Kanban Board';
+  usePageTitle(boardTitle, [boardTitle]);
   const [issues, setIssues] = useState<JiraIssue[]>([]);
   const [columns, setColumns] = useState<DynamicBoardColumn[]>([]);
   const [loading, setLoading] = useState(true);
@@ -103,9 +108,10 @@ export const KanbanBoard: React.FC = () => {
     setLoading(true);
     try {
       const issRes = await jiraApi.getSprintIssues(sprintId);
-      setIssues(issRes.data || []);
+      setIssues(Array.isArray(issRes.data) ? issRes.data : []);
     } catch (err) {
       console.error(err);
+      setIssues([]);
     } finally {
       setLoading(false);
     }
@@ -126,16 +132,17 @@ export const KanbanBoard: React.FC = () => {
   };
 
   // Counts
-  const subtasksCount = issues.filter(isSubtask).length;
+  const subtasksCount = Array.isArray(issues) ? issues.filter(isSubtask).length : 0;
 
   // Group issues into dynamic board columns
   const getCategorized = () => {
     const grouped: Record<string, JiraIssue[]> = {};
-    columns.forEach(col => {
+    const safeColumns = Array.isArray(columns) ? columns : [];
+    safeColumns.forEach(col => {
       grouped[col.id] = [];
     });
 
-    let filtered = issues;
+    let filtered = Array.isArray(issues) ? issues : [];
     
     // Filter out subtasks if hideSubtasks is enabled
     if (hideSubtasks) {

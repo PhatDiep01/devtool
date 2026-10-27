@@ -22,6 +22,7 @@ import { useJiraAuthStore } from '../../../stores/jira-auth.store';
 import { MarkdownEditor } from '../components/MarkdownEditor';
 import { splitFrontmatterAndBody, composeFullMarkdown } from '../../../utils/markdownConverter';
 import { SearchableSelect, SelectOption } from '../../../components/ui';
+import { usePageTitle } from '../../../utils/usePageTitle';
 
 export const ScreenEditorPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -38,6 +39,8 @@ export const ScreenEditorPage: React.FC = () => {
 
   // Screen form state
   const [title, setTitle] = useState('');
+
+  usePageTitle(isNew ? 'Tạo Màn hình mới' : title ? `Sửa: ${title}` : 'Chỉnh sửa Màn hình', [isNew, title]);
   const [selectedModuleId, setSelectedModuleId] = useState<number | ''>('');
   const [status, setStatus] = useState<string>('Draft');
   const [author, setAuthor] = useState<string>('');
@@ -55,9 +58,10 @@ export const ScreenEditorPage: React.FC = () => {
       !isNew && id ? docsApi.getScreen(Number(id)) : Promise.resolve(null)
     ])
       .then(([modulesRes, screenRes]) => {
-        setModules(modulesRes.data);
+        const rawModules = Array.isArray(modulesRes?.data) ? modulesRes.data : [];
+        setModules(rawModules);
 
-        if (screenRes && screenRes.data) {
+        if (screenRes && screenRes.data && typeof screenRes.data === 'object' && !Array.isArray(screenRes.data)) {
           const s = screenRes.data;
           setOriginalScreen(s);
           
@@ -77,8 +81,8 @@ export const ScreenEditorPage: React.FC = () => {
           // New screen defaults
           if (queryModuleId) {
             setSelectedModuleId(Number(queryModuleId));
-          } else if (modulesRes.data.length > 0) {
-            setSelectedModuleId(modulesRes.data[0].id);
+          } else if (rawModules.length > 0) {
+            setSelectedModuleId(rawModules[0].id);
           }
           const defaultAuthor = jiraUser?.displayName || 'Author';
           setAuthor(defaultAuthor);
@@ -122,7 +126,8 @@ Mô tả vai trò, mục tiêu và phạm vi của màn hình.
         }
       })
       .catch((err) => {
-        toast.error('Không thể tải dữ liệu màn hình');
+        setModules([]);
+        toast.error('Không thể tải dữ liệu màn hình hoặc danh sách module');
         console.error(err);
       })
       .finally(() => setLoading(false));
@@ -144,7 +149,8 @@ Mô tả vai trò, mục tiêu và phạm vi của màn hình.
       .map((t) => t.trim())
       .filter(Boolean);
 
-    const currentModule = modules.find((m) => m.id === Number(selectedModuleId));
+    const safeModules = Array.isArray(modules) ? modules : [];
+    const currentModule = safeModules.find((m) => m.id === Number(selectedModuleId));
 
     // Recombine metadata and body into clean standard Markdown with Frontmatter
     const fullMarkdownContent = composeFullMarkdown(
@@ -201,7 +207,8 @@ Mô tả vai trò, mục tiêu và phạm vi của màn hình.
     );
   }
 
-  const currentModule = modules.find((m) => m.id === Number(selectedModuleId));
+  const safeModules = Array.isArray(modules) ? modules : [];
+  const currentModule = safeModules.find((m) => m.id === Number(selectedModuleId));
 
   return (
     <div className="p-3 sm:p-6 md:p-8 max-w-7xl mx-auto space-y-5 animate-in fade-in duration-200">
@@ -282,7 +289,7 @@ Mô tả vai trò, mục tiêu và phạm vi của màn hình.
               Thuộc Nhóm (Module) <span className="text-destructive">*</span>
             </label>
             <SearchableSelect<number | ''>
-              options={modules.map((m) => ({
+              options={safeModules.map((m) => ({
                 value: m.id,
                 label: `${m.icon || '📁'} ${m.name}`,
               }))}
@@ -292,6 +299,11 @@ Mô tả vai trò, mục tiêu và phạm vi của màn hình.
               searchPlaceholder="Tìm kiếm module..."
               size="sm"
             />
+            {safeModules.length === 0 && (
+              <span className="text-[10px] text-amber-500 mt-1 block font-medium">
+                Chưa tải được module (kiểm tra URL Backend tại Cài đặt)
+              </span>
+            )}
           </div>
 
           {/* Status Selector */}

@@ -23,6 +23,19 @@ interface StickyNoteTrashModalProps {
   onEmptyTrash: () => Promise<void>;
 }
 
+const formatDisplayDateTime = (val?: string | Date | null): string => {
+  if (!val) return 'Mới đây';
+  const d = new Date(val);
+  if (isNaN(d.getTime())) return 'Mới đây';
+  return d.toLocaleString('vi-VN', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+};
+
 export const StickyNoteTrashModal: React.FC<StickyNoteTrashModalProps> = ({
   isOpen,
   onClose,
@@ -47,7 +60,6 @@ export const StickyNoteTrashModal: React.FC<StickyNoteTrashModalProps> = ({
   return (
     <div 
       className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in"
-      onClick={onClose}
     >
       <div 
         className="w-full max-w-3xl bg-card border border-border rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]"
@@ -168,16 +180,16 @@ export const StickyNoteTrashModal: React.FC<StickyNoteTrashModalProps> = ({
                         title={`Màu: ${colorConfig.label}`}
                       />
                       <h4 className="font-semibold text-sm text-foreground truncate">
-                        {note.title}
+                        {note.title?.trim() || 'New Note'}
                       </h4>
                     </div>
-                    <p className="text-xs text-muted-foreground line-clamp-2 mb-2 font-mono">
-                      {note.preview || '(Ghi chú trống)'}
+                    <p className="text-xs text-muted-foreground line-clamp-2 mb-2 font-mono break-words">
+                      {(note.preview && note.preview.trim()) || (note.content && note.content.trim().slice(0, 160)) || '(Ghi chú trống)'}
                     </p>
                     <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
                       <span className="flex items-center gap-1">
                         <Clock className="w-3 h-3" />
-                        Sửa: {new Date(note.updated_at).toLocaleString('vi-VN')}
+                        Sửa: {formatDisplayDateTime(note.updated_at)}
                       </span>
                       <span>•</span>
                       <span>{note.size_bytes} bytes</span>

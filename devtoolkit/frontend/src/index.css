@@ -47,6 +47,24 @@
   body {
     @apply bg-background text-foreground antialiased;
   }
+
+  /* Prevent iOS Safari auto-zoom on input/textarea/select focus across the entire app */
+  @media screen and (max-width: 768px) {
+    input,
+    textarea,
+    select {
+      font-size: 16px !important;
+    }
+  }
+
+  /* Optimize touch interactions and eliminate double-tap zoom delay */
+  button,
+  input,
+  textarea,
+  select,
+  a {
+    touch-action: manipulation;
+  }
 }
 
 @layer components {

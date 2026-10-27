@@ -30,9 +30,10 @@ import {
   GripVertical,
   ChevronLeft
 } from 'lucide-react';
-import { jiraApi } from '../../../services/api';
+import { jiraApi, getJiraProxyImageUrl } from '../../../services/api';
 import { JiraBoard, JiraSprint, JiraIssue, JiraBoardConfiguration } from '../../../types';
 import { IssueDetailModal } from '../components/IssueDetailModal';
+import { IssueTypeIcon } from '../components/IssueTypeIcon';
 import { CreateIssueModal } from '../components/CreateIssueModal';
 import { LogWorkModal } from '../components/LogWorkModal';
 import { SearchableSelect, SelectOption } from '../../../components/ui';
@@ -79,7 +80,7 @@ const AssigneeBadge: React.FC<AssigneeBadgeProps> = ({
     <div className="flex items-center gap-1.5 min-w-0" title={assignee.displayName}>
       {avatarUrl && !imgError ? (
         <img
-          src={avatarUrl}
+          src={getJiraProxyImageUrl(avatarUrl)}
           alt={assignee.displayName}
           onError={() => setImgError(true)}
           className={`${
@@ -1125,9 +1126,7 @@ export const JiraSprintsPage: React.FC = () => {
                         )}
 
                         {/* Issue Type Icon */}
-                        {story.fields.issuetype?.iconUrl && (
-                          <img src={story.fields.issuetype.iconUrl} alt="" className="w-4 h-4 rounded shrink-0" />
-                        )}
+                        <IssueTypeIcon type={story.fields.issuetype} className="w-4 h-4" />
 
                         {/* Story Key */}
                         <button
@@ -1394,9 +1393,7 @@ export const JiraSprintsPage: React.FC = () => {
                         className="w-4 h-4 rounded text-primary focus:ring-primary cursor-pointer shrink-0"
                       />
 
-                      {issue.fields.issuetype?.iconUrl && (
-                        <img src={issue.fields.issuetype.iconUrl} alt="" className="w-4 h-4 rounded shrink-0" />
-                      )}
+                      <IssueTypeIcon type={issue.fields.issuetype} className="w-4 h-4" />
 
                       <span className="font-mono font-bold text-foreground shrink-0">{issue.key}</span>
                       <span className="text-foreground truncate min-w-0 flex-1">{issue.fields.summary}</span>

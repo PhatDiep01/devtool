@@ -151,9 +151,20 @@ router.post('/:id/duplicate', (req: Request, res: Response) => {
 
 /**
  * POST /api/sticky-notes/:id/trash
+ * DELETE /api/sticky-notes/:id
  * Move note to trash
  */
 router.post('/:id/trash', (req: Request, res: Response) => {
+  try {
+    const result = moveToTrash(req.params.id);
+    res.json(result);
+  } catch (err: any) {
+    console.error('Error moving note to trash:', err);
+    res.status(400).json({ error: err.message || 'Lỗi khi chuyển ghi chú vào thùng rác' });
+  }
+});
+
+router.delete('/:id', (req: Request, res: Response) => {
   try {
     const result = moveToTrash(req.params.id);
     res.json(result);
