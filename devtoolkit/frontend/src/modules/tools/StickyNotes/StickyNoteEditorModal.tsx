@@ -52,6 +52,7 @@ export const StickyNoteEditorModal: React.FC<StickyNoteEditorModalProps> = ({
 }) => {
   const [viewMode, setViewMode] = useState<'edit' | 'split' | 'preview'>('edit');
   const [isCopied, setIsCopied] = useState(false);
+  const [isColorMenuOpen, setIsColorMenuOpen] = useState(false);
 
   const {
     isNewNote,
@@ -82,6 +83,7 @@ export const StickyNoteEditorModal: React.FC<StickyNoteEditorModalProps> = ({
     isConflictModalOpen,
     handleResolveConflict,
     manualSave,
+    saveAndClose,
     isConfirmCloseOpen,
     requestClose,
     confirmSaveAndClose,
@@ -139,7 +141,6 @@ export const StickyNoteEditorModal: React.FC<StickyNoteEditorModalProps> = ({
   return (
     <div 
       className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 animate-in fade-in"
-      onClick={handleSafeClose}
     >
       <div 
         className={`w-full max-w-4xl rounded-2xl shadow-2xl border overflow-hidden flex flex-col h-[90vh] sm:h-[85vh] transition-colors relative ${colorConfig.cardBgClass} ${colorConfig.borderClass}`}
@@ -174,8 +175,8 @@ export const StickyNoteEditorModal: React.FC<StickyNoteEditorModalProps> = ({
 
           {/* Color Picker & Save status & Actions */}
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-            {/* Color Palette Selector */}
-            <div className="flex items-center gap-1 p-1 rounded-lg bg-background/40 border border-border/40 backdrop-blur-sm">
+            {/* Desktop Color Palette Selector */}
+            <div className="hidden sm:flex items-center gap-1 p-1 rounded-lg bg-background/40 border border-border/40 backdrop-blur-sm">
               {STICKY_COLORS.map((c) => (
                 <button
                   key={c.id}
@@ -188,6 +189,42 @@ export const StickyNoteEditorModal: React.FC<StickyNoteEditorModalProps> = ({
                   title={`Đổi màu sang: ${c.label}`}
                 />
               ))}
+            </div>
+
+            {/* Mobile Color Dot with Popover */}
+            <div className="relative sm:hidden">
+              <button
+                type="button"
+                onClick={() => setIsColorMenuOpen(!isColorMenuOpen)}
+                style={{ backgroundColor: colorConfig.hex }}
+                className="w-6 h-6 rounded-full border border-black/20 dark:border-white/20 shadow-sm shrink-0 active:scale-95 transition-transform"
+                title={`Màu hiện tại: ${colorConfig.label}. Bấm để đổi màu`}
+              />
+              {isColorMenuOpen && (
+                <>
+                  <div 
+                    className="fixed inset-0 z-30" 
+                    onClick={() => setIsColorMenuOpen(false)} 
+                  />
+                  <div className="absolute right-0 top-full mt-2 p-1.5 bg-popover/95 backdrop-blur-md border border-border rounded-xl shadow-xl z-40 flex items-center gap-1.5 animate-in fade-in zoom-in-95">
+                    {STICKY_COLORS.map((c) => (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => {
+                          setColor(c.id);
+                          setIsColorMenuOpen(false);
+                        }}
+                        style={{ backgroundColor: c.hex }}
+                        className={`w-6 h-6 rounded-full transition-transform ${
+                          color === c.id ? 'scale-125 ring-2 ring-primary ring-offset-1' : 'hover:scale-110'
+                        }`}
+                        title={c.label}
+                      />
+                    ))}
+                  </div>
+                </>
+              )}
             </div>
 
             {/* Save Status Badge */}
@@ -228,26 +265,6 @@ export const StickyNoteEditorModal: React.FC<StickyNoteEditorModalProps> = ({
                 </span>
               )}
             </div>
-
-            {/* Header Save Button */}
-            <button
-              type="button"
-              onClick={() => manualSave()}
-              disabled={saveStatus === 'saving'}
-              className={`px-3 py-1.5 text-xs font-bold rounded-xl transition flex items-center gap-1.5 shadow-sm ${
-                isDirty 
-                  ? 'bg-primary text-primary-foreground hover:opacity-90 ring-2 ring-primary/30 animate-pulse' 
-                  : 'bg-card border border-border text-foreground hover:bg-accent'
-              }`}
-              title="Lưu ghi chú (Ctrl+S)"
-            >
-              {saveStatus === 'saving' ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Save className="w-3.5 h-3.5" />
-              )}
-              <span>Lưu</span>
-            </button>
 
             {/* Quick Actions (Copy, Export, Duplicate, Trash) */}
             <button
@@ -486,18 +503,40 @@ export const StickyNoteEditorModal: React.FC<StickyNoteEditorModalProps> = ({
                 Gần đạt dung lượng tối đa!
               </span>
             )}
+            {/* Left Button: Lưu lại (keeps editor open) */}
             <button
               type="button"
               onClick={() => manualSave()}
               disabled={saveStatus === 'saving'}
-              className="px-4 py-1.5 rounded-xl bg-primary text-primary-foreground font-bold hover:opacity-90 transition flex items-center gap-1.5 shadow-sm"
+              className={`px-3 sm:px-3.5 py-1.5 rounded-xl text-xs font-semibold border transition flex items-center gap-1.5 shadow-sm ${
+                isDirty
+                  ? 'border-primary/40 bg-primary/10 text-primary hover:bg-primary/20'
+                  : 'border-border bg-card text-foreground hover:bg-accent'
+              }`}
+              title="Lưu các thay đổi và tiếp tục chỉnh sửa (Ctrl+S)"
             >
               {saveStatus === 'saving' ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
               ) : (
                 <Save className="w-3.5 h-3.5" />
               )}
-              <span>Lưu ngay</span>
+              <span>Lưu lại</span>
+            </button>
+
+            {/* Right Button: Lưu & Đóng (saves and closes immediately without confirm popup) */}
+            <button
+              type="button"
+              onClick={() => saveAndClose(onClose)}
+              disabled={saveStatus === 'saving'}
+              className="px-3.5 sm:px-4 py-1.5 rounded-xl bg-primary text-primary-foreground text-xs font-bold hover:opacity-90 transition flex items-center gap-1.5 shadow-sm"
+              title="Lưu ghi chú và đóng trình soạn thảo"
+            >
+              {saveStatus === 'saving' ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Check className="w-3.5 h-3.5" />
+              )}
+              <span>Lưu & Đóng</span>
             </button>
           </div>
         </div>

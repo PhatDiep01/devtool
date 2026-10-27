@@ -84,12 +84,14 @@ export const DocsDashboard: React.FC = () => {
         docsApi.getStats(),
         docsApi.getScreens()
       ]);
-      setModules(modRes.data);
-      setStats(statRes.data);
-      setScreens(screenRes.data);
+      setModules(Array.isArray(modRes.data) ? modRes.data : []);
+      setStats(statRes.data && typeof statRes.data === 'object' ? statRes.data : null);
+      setScreens(Array.isArray(screenRes.data) ? screenRes.data : []);
     } catch (err) {
       console.error('Failed to load docs data:', err);
       toast.error('Không thể tải danh sách tài liệu');
+      setModules([]);
+      setScreens([]);
     } finally {
       setLoading(false);
     }
@@ -99,9 +101,13 @@ export const DocsDashboard: React.FC = () => {
     loadData();
   }, []);
 
+  // Safe normalized arrays
+  const safeScreens = useMemo(() => Array.isArray(screens) ? screens : [], [screens]);
+  const safeModules = useMemo(() => Array.isArray(modules) ? modules : [], [modules]);
+
   // Filtered screens calculation
   const filteredScreens = useMemo(() => {
-    return screens.filter((screen) => {
+    return safeScreens.filter((screen) => {
       // Filter by Group
       if (selectedModuleId !== 'all' && String(screen.module_id) !== selectedModuleId) {
         return false;
@@ -207,7 +213,7 @@ export const DocsDashboard: React.FC = () => {
   // Handle Delete Module button click
   const handleDeleteModuleClick = () => {
     if (!deletingModule) return;
-    const screenCount = screens.filter(s => s.module_id === deletingModule.id).length;
+    const screenCount = safeScreens.filter(s => s.module_id === deletingModule.id).length;
 
     // Nếu nhóm có màn hình và người dùng không chọn nhóm chuyển tiếp -> mở popup confirm
     if (screenCount > 0 && !transferTargetId) {
@@ -396,9 +402,9 @@ export const DocsDashboard: React.FC = () => {
           </button>
 
           {/* Group Tabs */}
-          {modules.map((m) => {
+          {safeModules.map((m) => {
             const isSelected = selectedModuleId === String(m.id);
-            const count = screens.filter(s => s.module_id === m.id).length;
+            const count = safeScreens.filter(s => s.module_id === m.id).length;
             const groupColor = m.color || '#3b82f6';
 
             return (
@@ -487,9 +493,9 @@ export const DocsDashboard: React.FC = () => {
           <div className="w-full sm:w-52">
             <SearchableSelect
               options={[
-                { value: 'all', label: `📁 Tất cả nhóm (${screens.length})` },
-                ...modules.map((m) => {
-                  const count = screens.filter(s => s.module_id === m.id).length;
+                { value: 'all', label: `📁 Tất cả nhóm (${safeScreens.length})` },
+                ...safeModules.map((m) => {
+                  const count = safeScreens.filter(s => s.module_id === m.id).length;
                   return {
                     value: String(m.id),
                     label: `${m.icon || '📁'} ${m.name}`,
@@ -961,10 +967,10 @@ export const DocsDashboard: React.FC = () => {
             </div>
 
             {/* Check if module contains screens */}
-            {screens.filter(s => s.module_id === deletingModule.id).length > 0 ? (
+            {safeScreens.filter(s => s.module_id === deletingModule.id).length > 0 ? (
               <div className="space-y-3 bg-amber-500/10 border border-amber-500/20 p-3.5 rounded-xl text-xs">
                 <p className="font-semibold text-amber-700 dark:text-amber-300">
-                  Nhóm này hiện có <b>{screens.filter(s => s.module_id === deletingModule.id).length}</b> màn hình đặc tả.
+                  Nhóm này hiện có <b>{safeScreens.filter(s => s.module_id === deletingModule.id).length}</b> màn hình đặc tả.
                 </p>
                 <p className="text-muted-foreground">
                   Bạn có thể chọn một nhóm khác để chuyển tất cả màn hình sang đó trước khi xóa (hoặc để trống nếu muốn xóa toàn bộ):
@@ -980,7 +986,7 @@ export const DocsDashboard: React.FC = () => {
                     className="w-full bg-background border border-border rounded-xl px-3 py-1.5 text-xs focus:outline-none focus:border-primary"
                   >
                     <option value="">-- Không chuyển (Xóa toàn bộ màn hình trong nhóm) --</option>
-                    {modules
+                    {safeModules
                       .filter(m => m.id !== deletingModule.id)
                       .map(m => (
                         <option key={m.id} value={m.id}>
@@ -1054,14 +1060,14 @@ export const DocsDashboard: React.FC = () => {
               <p>
                 Nhóm <b>"{deletingModule.name}"</b> đang chứa{' '}
                 <b className="text-foreground">
-                  {screens.filter(s => s.module_id === deletingModule.id).length}
+                  {safeScreens.filter(s => s.module_id === deletingModule.id).length}
                 </b>{' '}
                 màn hình đặc tả.
               </p>
               <div className="p-3 bg-destructive/10 border border-destructive/20 rounded-xl text-destructive font-medium space-y-1">
                 <div className="font-bold">⚠️ Cảnh báo mất dữ liệu:</div>
                 <p className="text-[11px] leading-normal">
-                  Vì bạn không chọn nhóm chuyển tiếp, <b>tất cả {screens.filter(s => s.module_id === deletingModule.id).length} màn hình đặc tả</b> và các file markdown tương ứng trên ổ đĩa sẽ bị <b>xóa vĩnh viễn</b>. Hành động này không thể hoàn tác!
+                  Vì bạn không chọn nhóm chuyển tiếp, <b>tất cả {safeScreens.filter(s => s.module_id === deletingModule.id).length} màn hình đặc tả</b> và các file markdown tương ứng trên ổ đĩa sẽ bị <b>xóa vĩnh viễn</b>. Hành động này không thể hoàn tác!
                 </p>
               </div>
               <p className="font-semibold text-foreground pt-1">

@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4f46e5" />
+      <stop offset="50%" stop-color="#3b82f6" />
+      <stop offset="100%" stop-color="#06b6d4" />
+    </linearGradient>
+  </defs>
+  <!-- Background with modern smooth rounded corners -->
+  <rect width="64" height="64" rx="16" fill="url(#bgGrad)"/>
+  <!-- Inner border glow -->
+  <rect x="1" y="1" width="62" height="62" rx="15" fill="none" stroke="#ffffff" stroke-width="1.5" stroke-opacity="0.3"/>
+  <!-- Left Bracket < -->
+  <path d="M21 21 L11 32 L21 43" stroke="#ffffff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <!-- Right Bracket > -->
+  <path d="M43 21 L53 32 L43 43" stroke="#ffffff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <!-- Center Slash / -->
+  <path d="M36 17 L28 47" stroke="#ffffff" stroke-width="4.5" stroke-linecap="round" fill="none" opacity="0.95"/>
+  <!-- Sparkle dot -->
+  <circle cx="51" cy="13" r="3.5" fill="#38bdf8"/>
+</svg>

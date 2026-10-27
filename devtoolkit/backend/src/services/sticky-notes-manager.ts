@@ -147,6 +147,39 @@ function findFileById(dir: string, id: string): { filePath: string; filename: st
 }
 
 /**
+ * Safe ISO string converter ensuring valid timestamp string representation
+ */
+export function toSafeIsoString(val: any, fallback: Date = new Date()): string {
+  if (val instanceof Date && !isNaN(val.getTime())) {
+    return val.toISOString();
+  }
+  if (typeof val === 'string' && val.trim()) {
+    const d = new Date(val);
+    if (!isNaN(d.getTime())) {
+      return d.toISOString();
+    }
+  }
+  return fallback.toISOString();
+}
+
+/**
+ * Extract clean preview string from content (first 160 characters)
+ */
+export function extractPreview(content: string): string {
+  if (!content || typeof content !== 'string') return '';
+  const clean = content
+    .replace(/^#+\s+/gm, '')
+    .replace(/^- \[[ x]\]\s+/gim, '')
+    .replace(/[*_`~>]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (clean) {
+    return clean.slice(0, 160);
+  }
+  return content.trim().slice(0, 160);
+}
+
+/**
  * Parse a note file content and extract metadata + content safely
  */
 export function parseNoteContent(rawContent: string, fallbackStats?: { birthtime: Date; mtime: Date; filename: string }): {
@@ -164,19 +197,20 @@ export function parseNoteContent(rawContent: string, fallbackStats?: { birthtime
 
     // Extract or infer fields
     const id = typeof data.id === 'string' && data.id.trim() ? data.id.trim() : generateNoteId();
-    const title = typeof data.title === 'string' && data.title.trim() 
-      ? data.title.trim().slice(0, MAX_TITLE_LENGTH)
+    const rawTitle = typeof data.title === 'string' ? data.title.trim() : '';
+    const title = rawTitle 
+      ? rawTitle.slice(0, MAX_TITLE_LENGTH)
       : (content.split('\n')[0]?.replace(/^[#\s\-*]+/, '').trim().slice(0, MAX_TITLE_LENGTH) || 'New Note');
     const color = ALLOWED_COLORS.includes(data.color) ? data.color : DEFAULT_COLOR;
     const pinned = Boolean(data.pinned);
     const version = typeof data.version === 'number' && Number.isFinite(data.version) ? data.version : 1;
 
-    const createdAt = data.created_at || (fallbackStats ? fallbackStats.birthtime.toISOString() : new Date().toISOString());
-    const updatedAt = data.updated_at || (fallbackStats ? fallbackStats.mtime.toISOString() : new Date().toISOString());
+    const createdAt = toSafeIsoString(data.created_at, fallbackStats?.birthtime || new Date());
+    const updatedAt = toSafeIsoString(data.updated_at, fallbackStats?.mtime || new Date());
 
     metadata = {
       id,
-      title,
+      title: title || 'New Note',
       color,
       pinned,
       created_at: createdAt,
@@ -192,20 +226,13 @@ export function parseNoteContent(rawContent: string, fallbackStats?: { birthtime
       title: firstLine ? firstLine.slice(0, MAX_TITLE_LENGTH) : 'New Note',
       color: DEFAULT_COLOR,
       pinned: false,
-      created_at: fallbackStats ? fallbackStats.birthtime.toISOString() : new Date().toISOString(),
-      updated_at: fallbackStats ? fallbackStats.mtime.toISOString() : new Date().toISOString(),
+      created_at: toSafeIsoString(fallbackStats?.birthtime, new Date()),
+      updated_at: toSafeIsoString(fallbackStats?.mtime, new Date()),
       version: 1
     };
   }
 
-  // Generate a clean preview snippet (strip markdown headers, checklists, first 120 chars)
-  const preview = content
-    .replace(/^#+\s+/gm, '')
-    .replace(/^- \[[ x]\]\s+/gim, '')
-    .replace(/[*_`~>]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 160);
+  const preview = extractPreview(content);
 
   return { metadata, content, preview };
 }
@@ -216,12 +243,12 @@ export function parseNoteContent(rawContent: string, fallbackStats?: { birthtime
 export function serializeNote(metadata: StickyNoteMetadata, content: string): string {
   const frontmatterData = {
     id: metadata.id,
-    title: metadata.title,
-    color: metadata.color,
-    pinned: metadata.pinned,
-    created_at: metadata.created_at,
-    updated_at: metadata.updated_at,
-    version: metadata.version
+    title: (metadata.title || '').trim() || 'New Note',
+    color: metadata.color || DEFAULT_COLOR,
+    pinned: Boolean(metadata.pinned),
+    created_at: toSafeIsoString(metadata.created_at, new Date()),
+    updated_at: toSafeIsoString(metadata.updated_at, new Date()),
+    version: typeof metadata.version === 'number' && Number.isFinite(metadata.version) ? metadata.version : 1
   };
 
   return matter.stringify(content, frontmatterData);
@@ -378,13 +405,7 @@ export function createNote(data: {
   atomicWriteFile(filePath, serialized);
 
   const stat = fs.statSync(filePath);
-  const preview = content
-    .replace(/^#+\s+/gm, '')
-    .replace(/^- \[[ x]\]\s+/gim, '')
-    .replace(/[*_`~>]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 160);
+  const preview = extractPreview(content);
 
   return {
     ...metadata,
@@ -486,13 +507,7 @@ export function updateNote(
   }
 
   const finalStat = fs.statSync(targetPath);
-  const preview = newContent
-    .replace(/^#+\s+/gm, '')
-    .replace(/^- \[[ x]\]\s+/gim, '')
-    .replace(/[*_`~>]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 160);
+  const preview = extractPreview(newContent);
 
   return {
     ...updatedMetadata,

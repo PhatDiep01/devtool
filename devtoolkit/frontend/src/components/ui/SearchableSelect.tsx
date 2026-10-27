@@ -33,7 +33,7 @@ export interface SearchableSelectProps<T = string | number> {
 }
 
 export function SearchableSelect<T = string | number>({
-  options,
+  options = [],
   value,
   onChange,
   placeholder = 'Chọn một mục...',
@@ -55,27 +55,30 @@ export function SearchableSelect<T = string | number>({
   const containerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
+  // Safe normalized options
+  const safeOptions = useMemo(() => Array.isArray(options) ? options : [], [options]);
+
   // Auto-enable search if more than 5 options and searchable not explicitly passed
-  const isSearchEnabled = searchable !== undefined ? searchable : options.length > 5;
+  const isSearchEnabled = searchable !== undefined ? searchable : safeOptions.length > 5;
 
   // Selected option
   const selectedOption = useMemo(
-    () => options.find((opt) => opt.value === value),
-    [options, value]
+    () => safeOptions.find((opt) => opt.value === value),
+    [safeOptions, value]
   );
 
   // Filtered options based on search query
   const filteredOptions = useMemo(() => {
-    if (!searchQuery.trim()) return options;
+    if (!searchQuery.trim()) return safeOptions;
     const query = searchQuery.trim().toLowerCase();
-    return options.filter((opt) => {
-      const matchLabel = opt.label.toLowerCase().includes(query);
-      const matchSub = opt.sublabel?.toLowerCase().includes(query);
+    return safeOptions.filter((opt) => {
+      const matchLabel = opt.label ? opt.label.toLowerCase().includes(query) : false;
+      const matchSub = opt.sublabel ? opt.sublabel.toLowerCase().includes(query) : false;
       const matchVal = String(opt.value).toLowerCase().includes(query);
-      const matchGroup = opt.group?.toLowerCase().includes(query);
+      const matchGroup = opt.group ? opt.group.toLowerCase().includes(query) : false;
       return matchLabel || matchSub || matchVal || matchGroup;
     });
-  }, [options, searchQuery]);
+  }, [safeOptions, searchQuery]);
 
   // Grouped options if any
   const groupedOptions = useMemo(() => {

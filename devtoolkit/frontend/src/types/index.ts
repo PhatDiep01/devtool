@@ -297,13 +297,23 @@ export interface SearchResult {
 }
 
 export interface StorageStats {
+  dataDir?: string;
   docsPath: string;
   imagesPath: string;
+  bugFilesPath?: string;
   totalDocs: number;
   totalImages: number;
   docsSize: string;
   imagesSize: string;
   totalSize: string;
+  totalStickyNotes?: number;
+  stickyNotesSize?: string;
+  databaseSize?: string;
+  overallFileCount?: number;
+  dbScreensCount?: number;
+  dbModulesCount?: number;
+  bugFilesCount?: number;
+  genericImagesCount?: number;
 }
 
 export interface DashboardStats {
@@ -331,6 +341,8 @@ export interface JiraConfigInfo {
 export interface JiraLoginParams {
   baseUrl?: string;
   email?: string;
+  username?: string;
+  password?: string;
   apiToken?: string;
   authType?: 'basic' | 'bearer';
   accessToken?: string;
@@ -381,6 +393,62 @@ export interface BugAttachment {
   isImage: boolean;
 }
 
+export type AnnotationType = 
+  | 'rect'
+  | 'circle'
+  | 'arrow'
+  | 'line'
+  | 'text'
+  | 'badge'
+  | 'highlight';
+
+export type AnnotationStatus = 'open' | 'fixing' | 'resolved';
+
+export interface NormalizedPoint {
+  x: number;
+  y: number;
+}
+
+export interface AnnotationComment {
+  id: string;
+  author: string;
+  text: string;
+  created_at: string;
+}
+
+export interface AnnotationItem {
+  id: string;
+  type: AnnotationType;
+  sequence: number;
+  x: number;
+  y: number;
+  width?: number;
+  height?: number;
+  x2?: number;
+  y2?: number;
+  points?: NormalizedPoint[];
+  color: string;
+  strokeWidth: number;
+  fontSize?: number;
+  fillOpacity?: number;
+  title?: string;
+  note: string;
+  status: AnnotationStatus;
+  comments?: AnnotationComment[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BugImageAnnotationRecord {
+  id?: number;
+  bug_id: number;
+  image_id: string;
+  annotations: AnnotationItem[];
+  version: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface BugItem {
   id: number;
   title: string;
@@ -392,6 +460,9 @@ export interface BugItem {
   description?: string | null;
   fix_solution?: string | null;
   attachments: BugAttachment[];
+  annotations?: Record<string, BugImageAnnotationRecord>;
+  annotated_images_count?: number;
+  has_annotations?: boolean;
   created_by?: string | null;
   assigned_to?: string | null;
   created_at: string;
@@ -406,6 +477,7 @@ export interface BugStats {
   fe_count: number;
   be_count: number;
   both_count: number;
+  annotated_count?: number;
 }
 
 export interface BugListResponse {

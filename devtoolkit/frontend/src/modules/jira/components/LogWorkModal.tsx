@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { 
   X, 
   Clock, 
@@ -206,9 +207,14 @@ export const LogWorkModal: React.FC<LogWorkModalProps> = ({
     }
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-background/80 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="bg-card border border-border rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col max-h-[90dvh]">
+  return typeof document !== 'undefined' ? createPortal(
+    <div 
+      className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-background/80 backdrop-blur-sm animate-in fade-in duration-200"
+    >
+      <div 
+        className="bg-card border border-border rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col max-h-[90dvh]"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Modal Header */}
         <div className="flex items-center justify-between p-5 border-b border-border bg-muted/30">
           <div className="flex items-center gap-2.5">
@@ -439,6 +445,7 @@ export const LogWorkModal: React.FC<LogWorkModalProps> = ({
           </div>
         </form>
       </div>
-    </div>
-  );
+    </div>,
+    document.body
+  ) : null;
 };

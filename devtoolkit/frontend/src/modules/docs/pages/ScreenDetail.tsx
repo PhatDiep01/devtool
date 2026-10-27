@@ -22,12 +22,15 @@ import { toast } from 'react-hot-toast';
 import { docsApi, filesApi, settingsApi } from '../../../services/api';
 import { useJiraAuthStore } from '../../../stores/jira-auth.store';
 import { MarkdownRenderer } from '../components/MarkdownRenderer';
+import { usePageTitle } from '../../../utils/usePageTitle';
 
 export const ScreenDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { user: jiraUser } = useJiraAuthStore();
   const [screen, setScreen] = useState<any>(null);
+
+  usePageTitle(screen?.title ? screen.title : 'Chi tiết Màn hình', [screen?.title]);
   const [jiraBaseUrl, setJiraBaseUrl] = useState<string>('');
   const [activeTab, setActiveTab] = useState<string>('overview');
   const [loading, setLoading] = useState(true);
@@ -61,7 +64,7 @@ export const ScreenDetail: React.FC = () => {
       .then(([screenRes, settingsRes]) => {
         setScreen(screenRes.data);
         const jiraConfig = (settingsRes.data as any)?.jira || {};
-        const effectiveBaseUrl = jiraUser?.baseUrl || jiraConfig.jira_base_url;
+        const effectiveBaseUrl = jiraUser?.baseUrl || jiraConfig.jira_base_url || 'https://task.ascvn.com.vn';
         if (effectiveBaseUrl) {
           setJiraBaseUrl(effectiveBaseUrl.replace(/\/+$/, ''));
         }

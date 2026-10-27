@@ -77,17 +77,22 @@ export function useStickyNoteEditor(
 
   // Check dirty state
   const isDirty = useMemo(() => {
+    const isCurrentlyDraft = !currentId || currentId.startsWith('draft_');
+    const normalizedTitle = (title || '').trim() || 'New Note';
+    const lastSavedTitle = (lastSavedRef.current.title || '').trim() || 'New Note';
+
     // If it's a draft note and user hasn't typed anything meaningful
-    if (isNewNote && (!title || title === 'New Note') && !content.trim()) {
+    if (isCurrentlyDraft && normalizedTitle === 'New Note' && !content.trim()) {
       return false;
     }
+
     return (
-      title !== lastSavedRef.current.title ||
+      normalizedTitle !== lastSavedTitle ||
       content !== lastSavedRef.current.content ||
       color !== lastSavedRef.current.color ||
       pinned !== lastSavedRef.current.pinned
     );
-  }, [title, content, color, pinned, isNewNote]);
+  }, [title, content, color, pinned, currentId]);
 
   // Update saveStatus to 'dirty' when user edits
   useEffect(() => {
@@ -125,11 +130,16 @@ export function useStickyNoteEditor(
     async (forceOverwrite = false): Promise<StickyNote | null> => {
       setSaveStatus('saving');
       const cleanTitle = title.trim() || 'New Note';
+      if (!title.trim()) {
+        setTitle(cleanTitle);
+      }
+
+      const isCurrentDraft = !currentId || currentId.startsWith('draft_');
 
       try {
         let savedNote: StickyNote;
 
-        if (isNewNote) {
+        if (isCurrentDraft) {
           // CREATE NEW NOTE ON SERVER
           const resp = await stickyNotesApi.create({
             title: cleanTitle,
@@ -143,7 +153,7 @@ export function useStickyNoteEditor(
           toast.success('Đã lưu ghi chú mới thành công!');
         } else {
           // UPDATE EXISTING NOTE
-          const resp = await stickyNotesApi.update(currentId || initialNote!.id, {
+          const resp = await stickyNotesApi.update(currentId, {
             title: cleanTitle,
             content,
             color,
@@ -158,17 +168,18 @@ export function useStickyNoteEditor(
 
         lastSavedRef.current = {
           id: savedNote.id,
-          title: savedNote.title,
+          title: savedNote.title || cleanTitle,
           content: savedNote.content,
           color: savedNote.color,
           pinned: savedNote.pinned,
           version: savedNote.version
         };
+        setTitle(savedNote.title || cleanTitle);
 
         setSaveStatus('saved');
         setConflictData(null);
         setIsConflictModalOpen(false);
-        onNoteUpdated(savedNote, isNewNote);
+        onNoteUpdated(savedNote, isCurrentDraft);
 
         setTimeout(() => {
           setSaveStatus('idle');
@@ -189,7 +200,7 @@ export function useStickyNoteEditor(
         return null;
       }
     },
-    [isNewNote, title, content, color, pinned, version, currentId, initialNote, onNoteUpdated]
+    [currentId, title, content, color, pinned, version, onNoteUpdated]
   );
 
   // Content change with Undo/Redo tracking
@@ -334,13 +345,16 @@ export function useStickyNoteEditor(
 
   // Request Close with Safe Confirm Check
   const requestClose = useCallback((onProceedClose: () => void) => {
+    const isCurrentlyDraft = !currentId || currentId.startsWith('draft_');
+    const normalizedTitle = (title || '').trim() || 'New Note';
+
     // 1. If it's a draft note and user made no edits: close immediately without saving or asking!
-    if (isNewNote && (!title || title === 'New Note') && !content.trim()) {
+    if (isCurrentlyDraft && normalizedTitle === 'New Note' && !content.trim()) {
       onProceedClose();
       return;
     }
 
-    // 2. If no unsaved changes: close immediately
+    // 2. If no unsaved changes: close immediately without confirm popup!
     if (!isDirty) {
       onProceedClose();
       return;
@@ -349,9 +363,18 @@ export function useStickyNoteEditor(
     // 3. Otherwise: show confirm popup modal
     pendingCloseCallbackRef.current = onProceedClose;
     setIsConfirmCloseOpen(true);
-  }, [isNewNote, title, content, isDirty]);
+  }, [currentId, title, content, isDirty]);
 
-  // Confirm: Save & Close
+  // Direct "Lưu & Đóng" Action: Saves and immediately closes with NO confirm popup
+  const saveAndClose = useCallback(async (onProceedClose: () => void) => {
+    const result = await manualSave();
+    if (result) {
+      setIsConfirmCloseOpen(false);
+      onProceedClose();
+    }
+  }, [manualSave]);
+
+  // Confirm: Save & Close (from inside confirmation dialog)
   const confirmSaveAndClose = useCallback(async () => {
     const result = await manualSave();
     if (result) {
@@ -447,6 +470,7 @@ export function useStickyNoteEditor(
     setIsConflictModalOpen,
     handleResolveConflict,
     manualSave,
+    saveAndClose,
     isConfirmCloseOpen,
     requestClose,
     confirmSaveAndClose,

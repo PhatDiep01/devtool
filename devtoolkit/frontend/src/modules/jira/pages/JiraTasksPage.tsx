@@ -16,11 +16,13 @@ import {
   CheckCircle2,
   AlertCircle
 } from 'lucide-react';
-import { jiraApi } from '../../../services/api';
+import { jiraApi, getJiraProxyImageUrl } from '../../../services/api';
 import { JiraIssue, JiraIssueType, JiraAssignableUser } from '../../../types';
 import { IssueDetailModal } from '../components/IssueDetailModal';
 import { CreateIssueModal } from '../components/CreateIssueModal';
 import { LogWorkModal } from '../components/LogWorkModal';
+import { IssueTypeIcon } from '../components/IssueTypeIcon';
+import { JiraAvatar } from '../components/JiraAvatar';
 import { SearchableSelect, SelectOption } from '../../../components/ui';
 import { toast } from 'react-hot-toast';
 
@@ -262,7 +264,7 @@ export const JiraTasksPage: React.FC = () => {
         value: userVal,
         label: u.displayName,
         sublabel: u.name && u.name !== u.displayName ? `@${u.name}` : undefined,
-        avatarUrl: u.avatarUrls?.['24x24'] || u.avatarUrls?.['32x32'],
+        avatarUrl: getJiraProxyImageUrl(u.avatarUrls?.['24x24'] || u.avatarUrls?.['32x32']),
         group: `Thành viên hệ thống (${assignees.length})`,
       };
     }),
@@ -578,49 +580,6 @@ export const JiraTasksPage: React.FC = () => {
                   const isSubtask = Boolean(issue.fields.issuetype?.subtask || issue.fields.parent);
                   const statusCat = issue.fields.status?.statusCategory?.key;
 
-                  // Memoized options for modern SearchableSelects
-  const projectOptions = useMemo<SelectOption<string>[]>(() => [
-    { value: '', label: 'Tất cả dự án' },
-    ...projects.map((p) => ({
-      value: p.key,
-      label: p.name,
-      sublabel: p.key,
-    })),
-  ], [projects]);
-
-  const typeOptions = useMemo<SelectOption<string>[]>(() => [
-    { value: '', label: 'Tất cả loại (All Types)' },
-    { value: 'standard', label: 'Standard Issues (Story, Task, Bug)', group: 'Phân loại cơ bản' },
-    { value: 'subtask', label: 'Chỉ Sub-tasks (Tất cả Subtask)', group: 'Phân loại cơ bản' },
-    ...(issueTypes.length > 0
-      ? issueTypes.map((it) => ({
-          value: it.name,
-          label: it.name,
-          badge: it.subtask ? 'Subtask' : undefined,
-          badgeColor: it.subtask ? 'bg-purple-500/15 text-purple-600 dark:text-purple-400' : undefined,
-          group: 'Loại cụ thể',
-        }))
-      : [
-          { value: 'Story', label: 'Story', group: 'Loại cụ thể' },
-          { value: 'Task', label: 'Task', group: 'Loại cụ thể' },
-          { value: 'Bug', label: 'Bug', group: 'Loại cụ thể' },
-          { value: 'Sub-task', label: 'Sub-task', group: 'Loại cụ thể' },
-        ]),
-  ], [issueTypes]);
-
-  const statusOptions = useMemo<SelectOption<string>[]>(() => [
-    { value: 'active', label: '⚡ Đang chạy / Chưa Done (Mặc định)', group: 'Phổ biến' },
-    { value: 'in_progress', label: '⏳ Đang thực hiện (In Progress)', group: 'Phổ biến' },
-    { value: 'todo', label: '📋 Chờ làm (To Do)', group: 'Phổ biến' },
-    { value: 'done', label: '✔️ Đã hoàn thành (Done)', group: 'Phổ biến' },
-    { value: 'all', label: '🌐 Tất cả trạng thái (Bao gồm Done)', group: 'Phổ biến' },
-    ...statuses.map((s) => ({
-      value: s.name,
-      label: s.name,
-      group: 'Trạng thái chi tiết',
-    })),
-  ], [statuses]);
-
                   return (
                     <tr 
                       key={issue.key}
@@ -629,16 +588,7 @@ export const JiraTasksPage: React.FC = () => {
                     >
                       {/* Type Icon */}
                       <td className="py-3 px-4">
-                        {issue.fields.issuetype?.iconUrl ? (
-                          <img
-                            src={issue.fields.issuetype.iconUrl}
-                            alt={issue.fields.issuetype.name}
-                            className="w-4 h-4 rounded shrink-0"
-                            title={issue.fields.issuetype.name}
-                          />
-                        ) : (
-                          <Layers className="w-4 h-4 text-muted-foreground" />
-                        )}
+                        <IssueTypeIcon type={issue.fields.issuetype} className="w-4 h-4" />
                       </td>
 
                       {/* Key with Subtask indicator */}
@@ -683,7 +633,12 @@ export const JiraTasksPage: React.FC = () => {
                       <td className="py-3 px-4 text-muted-foreground">
                         <div className="flex items-center gap-1.5 font-medium">
                           {issue.fields.priority?.iconUrl && (
-                            <img src={issue.fields.priority.iconUrl} alt="" className="w-3.5 h-3.5" />
+                            <img 
+                              src={getJiraProxyImageUrl(issue.fields.priority.iconUrl)} 
+                              alt="" 
+                              className="w-3.5 h-3.5 object-contain" 
+                              onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
+                            />
                           )}
                           <span>{issue.fields.priority?.name || 'Medium'}</span>
                         </div>
@@ -692,17 +647,14 @@ export const JiraTasksPage: React.FC = () => {
                       {/* Assignee */}
                       <td className="py-3 px-4">
                         {issue.fields.assignee ? (
-                          <div className="flex items-center gap-1.5 text-foreground font-medium">
-                            {issue.fields.assignee.avatarUrls?.['24x24'] ? (
-                              <img
-                                src={issue.fields.assignee.avatarUrls['24x24']}
-                                alt=""
-                                className="w-4 h-4 rounded-full"
-                              />
-                            ) : (
-                              <User className="w-3.5 h-3.5 text-muted-foreground" />
-                            )}
-                            <span className="truncate max-w-[100px]">{issue.fields.assignee.displayName}</span>
+                          <div className="flex items-center gap-2 text-foreground font-medium">
+                            <JiraAvatar 
+                              avatarUrl={issue.fields.assignee.avatarUrls?.['24x24'] || issue.fields.assignee.avatarUrls?.['32x32']} 
+                              displayName={issue.fields.assignee.displayName}
+                              className="w-5 h-5"
+                              sizeText="text-[9px]"
+                            />
+                            <span className="truncate max-w-[120px]">{issue.fields.assignee.displayName}</span>
                           </div>
                         ) : (
                           <span className="text-muted-foreground italic">Unassigned</span>

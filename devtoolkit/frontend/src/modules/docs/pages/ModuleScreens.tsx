@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { FileText, ArrowLeft, Plus, Clock, Tag, User } from 'lucide-react';
 import { docsApi } from '../../../services/api';
 import { Screen } from '../../../types';
+import { usePageTitle } from '../../../utils/usePageTitle';
 
 export const ModuleScreens: React.FC = () => {
   const { moduleSlug } = useParams<{ moduleSlug: string }>();
@@ -10,12 +11,19 @@ export const ModuleScreens: React.FC = () => {
   const [screens, setScreens] = useState<Screen[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const safeScreens = Array.isArray(screens) ? screens : [];
+  const moduleTitle = safeScreens[0]?.module_name || moduleSlug || 'Module Tài liệu';
+  usePageTitle(moduleTitle, [moduleTitle]);
+
   useEffect(() => {
     if (!moduleSlug) return;
     setLoading(true);
     docsApi.getScreensByModule(moduleSlug)
-      .then(res => setScreens(res.data))
-      .catch(err => console.error(err))
+      .then(res => setScreens(Array.isArray(res.data) ? res.data : []))
+      .catch(err => {
+        console.error(err);
+        setScreens([]);
+      })
       .finally(() => setLoading(false));
   }, [moduleSlug]);
 
@@ -63,7 +71,7 @@ export const ModuleScreens: React.FC = () => {
           <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin mb-3" />
           <span>Loading screen documents...</span>
         </div>
-      ) : screens.length === 0 ? (
+      ) : safeScreens.length === 0 ? (
         <div className="bg-card border border-border rounded-2xl p-8 sm:p-12 text-center space-y-3 shadow-sm">
           <FileText className="w-10 h-10 mx-auto text-muted-foreground/60" />
           <h4 className="text-base font-bold text-foreground">No documents yet</h4>
@@ -80,7 +88,7 @@ export const ModuleScreens: React.FC = () => {
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {screens.map((s) => (
+          {safeScreens.map((s) => (
             <div
               key={s.id}
               onClick={() => navigate(`/docs/screen/${s.id}`)}

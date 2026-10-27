@@ -23,6 +23,7 @@ import { jiraApi } from '../../../services/api';
 import { useJiraAuthStore } from '../../../stores/jira-auth.store';
 import { JiraBoard } from '../../../types';
 import { IssueDetailModal } from '../components/IssueDetailModal';
+import { JiraAvatar } from '../components/JiraAvatar';
 import { toast } from 'react-hot-toast';
 
 export const JiraDashboard: React.FC = () => {
@@ -102,17 +103,12 @@ export const JiraDashboard: React.FC = () => {
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="flex items-start sm:items-center gap-3.5 min-w-0">
             {/* Avatar or User Icon */}
-            {user?.avatarUrl ? (
-              <img
-                src={user.avatarUrl}
-                alt={user.displayName}
-                className="w-12 h-12 rounded-2xl border-2 border-primary/20 shrink-0 object-cover shadow-sm"
-              />
-            ) : (
-              <div className="w-12 h-12 rounded-2xl bg-blue-600 text-white flex items-center justify-center font-bold text-lg shrink-0 shadow-md shadow-blue-500/20">
-                {(user?.displayName || 'J').charAt(0).toUpperCase()}
-              </div>
-            )}
+            <JiraAvatar
+              avatarUrl={user?.avatarUrl || status?.user?.avatarUrl}
+              displayName={user?.displayName || status?.user?.displayName}
+              className="w-12 h-12 rounded-2xl border-2 border-primary/20 shadow-sm"
+              sizeText="text-base"
+            />
 
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">

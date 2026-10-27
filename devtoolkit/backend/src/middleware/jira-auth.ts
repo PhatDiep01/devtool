@@ -84,6 +84,46 @@ export function getActiveJiraSession(req: Request): JiraSession | null {
 }
 
 /**
+ * Recursively inspects request payload for Jira Server / Data Center.
+ * Flattens any ADF v3 objects ({ type: 'doc', ... }) into clean plain text strings,
+ * ensuring fields like body, comment, and description are NEVER sent as JSON objects.
+ */
+export function deepSanitizeForJiraServer(data: any): any {
+  if (data === null || data === undefined) return data;
+  if (typeof data !== 'object') return data;
+
+  // If this object is an ADF document structure, convert to string immediately
+  if (data.type === 'doc' && Array.isArray(data.content)) {
+    return adfToText(data);
+  }
+
+  if (Array.isArray(data)) {
+    return data.map(item => deepSanitizeForJiraServer(item));
+  }
+
+  const result: Record<string, any> = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (value === null || value === undefined) {
+      result[key] = value;
+    } else if (typeof value === 'object') {
+      const vAny = value as any;
+      if (vAny.type === 'doc' && Array.isArray(vAny.content)) {
+        result[key] = adfToText(vAny);
+      } else if ((key === 'body' || key === 'description') && !Array.isArray(value)) {
+        // If Jira Server receives an object for body or description, convert to text
+        const converted = adfToText(vAny);
+        result[key] = converted || '';
+      } else {
+        result[key] = deepSanitizeForJiraServer(value);
+      }
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+/**
  * Creates an Axios client for communicating with Jira using session credentials.
  * Supports both Basic Auth (email + API Token) and Bearer/Personal Access Token.
  * Handles Jira Server / Data Center vs Cloud URL normalization seamlessly.
@@ -109,10 +149,12 @@ export function createJiraClientFromSession(session: JiraSession): AxiosInstance
   // Request interceptor: On Jira Server / Data Center, rewrite /rest/api/3/ to /rest/api/2/
   // and convert ADF objects back to plain strings if needed
   client.interceptors.request.use((config) => {
-    if (isJiraServer && config.url && config.url.includes('/rest/api/3/')) {
-      config.url = config.url.replace('/rest/api/3/', '/rest/api/2/');
-      if (config.data && typeof config.data === 'object' && config.data.comment && typeof config.data.comment === 'object') {
-        config.data.comment = adfToText(config.data.comment);
+    if (isJiraServer) {
+      if (config.url && config.url.includes('/rest/api/3/')) {
+        config.url = config.url.replace('/rest/api/3/', '/rest/api/2/');
+      }
+      if (config.data) {
+        config.data = deepSanitizeForJiraServer(config.data);
       }
     }
     return config;
@@ -145,6 +187,24 @@ export function createJiraClientFromSession(session: JiraSession): AxiosInstance
         config.url = config.url.replace('/rest/api/3/', '/rest/api/2/');
         return client(config);
       }
+
+      // Auto-recovery for String deserialization / START_OBJECT errors from Jira Server
+      if (
+        error.response?.data &&
+        config?.data &&
+        !config._retriedSanitize
+      ) {
+        const errorText = JSON.stringify(error.response.data);
+        if (
+          errorText.includes('START_OBJECT') ||
+          errorText.includes('Can not deserialize instance of java.lang.String')
+        ) {
+          config._retriedSanitize = true;
+          config.data = deepSanitizeForJiraServer(config.data);
+          return client(config);
+        }
+      }
+
       return Promise.reject(error);
     }
   );

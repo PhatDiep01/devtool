@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { 
@@ -15,8 +16,10 @@ import {
   Plus, 
   ChevronRight, 
   ChevronDown,
+  ChevronUp,
   ChevronsUpDown,
   ChevronsDownUp,
+  ArrowUpDown,
   Check, 
   ArrowRight,
   Copy,
@@ -31,11 +34,14 @@ import {
   Maximize2,
   Minimize2
 } from 'lucide-react';
-import { jiraApi, resolveApiUrl } from '../../../services/api';
+import { jiraApi, resolveApiUrl, getJiraProxyImageUrl } from '../../../services/api';
 import { useJiraAuthStore } from '../../../stores/jira-auth.store';
 import { JiraIssue } from '../../../types';
 import { LogWorkModal } from './LogWorkModal';
 import { CreateIssueModal } from './CreateIssueModal';
+import { IssueTypeIcon } from './IssueTypeIcon';
+import { JiraAvatar } from './JiraAvatar';
+import { formatRelativeTime } from '../../../utils/dateUtils';
 import { toast } from 'react-hot-toast';
 
 interface IssueDetailModalProps {
@@ -159,6 +165,25 @@ function formatFileSize(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
+// Clean text snippet for collapsed comment preview
+function getCommentSnippet(body: any): string {
+  if (!body) return 'Không có nội dung';
+  let text = '';
+  if (typeof body === 'string') {
+    text = body
+      .replace(/\{code[\s\S]*?\{code\}/g, '[Mã nguồn]')
+      .replace(/\{noformat[\s\S]*?\{noformat\}/g, '[Văn bản]')
+      .replace(/!.*?(\||!)/g, '[Hình ảnh]')
+      .replace(/\[([^|\]\r\n]+)\|([^\]\r\n]+)\]/g, '$1')
+      .replace(/\[(https?:\/\/[^\]\r\n]+)\]/g, '$1')
+      .replace(/[#*_{}\[\]|]/g, '')
+      .trim();
+  } else {
+    text = renderAdfToMarkdown(body).replace(/[#*`_~\[\]]/g, '').trim();
+  }
+  return text.replace(/\s+/g, ' ') || 'Không có nội dung';
+}
+
 export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
   isOpen,
   onClose,
@@ -194,6 +219,10 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
   // Sub-modals
   const [showLogWork, setShowLogWork] = useState(false);
   const [showCreateSubtask, setShowCreateSubtask] = useState(false);
+
+  // Comments sort order & expanded state
+  const [commentSortOrder, setCommentSortOrder] = useState<'desc' | 'asc'>('desc');
+  const [expandedCommentIds, setExpandedCommentIds] = useState<Set<string>>(new Set());
 
   // Close transition menu on click outside
   useEffect(() => {
@@ -248,18 +277,99 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
     }
   };
 
+  // Prevent background scroll when modal or lightbox is open
+  useEffect(() => {
+    if (isOpen || previewImage) {
+      const originalOverflow = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+      return () => {
+        document.body.style.overflow = originalOverflow;
+      };
+    }
+  }, [isOpen, !!previewImage]);
+
+
+  const commentsList = issue?.fields?.comment?.comments || [];
+
+  // Sort comments by created date: newest first by default ('desc')
+  const sortedComments = React.useMemo(() => {
+    return [...commentsList].sort((a, b) => {
+      const tA = new Date(a.created).getTime() || 0;
+      const tB = new Date(b.created).getTime() || 0;
+      return commentSortOrder === 'desc' ? tB - tA : tA - tB;
+    });
+  }, [commentsList, commentSortOrder]);
+
+  // Keep track of loaded issue to initialize expanded comments
+  const lastLoadedIssueRef = useRef<string>('');
+  const lastCommentsCountRef = useRef<number>(0);
+
+  useEffect(() => {
+    const isNewIssue = lastLoadedIssueRef.current !== currentKey;
+    const isNewCount = lastCommentsCountRef.current !== commentsList.length;
+
+    if (isNewIssue || isNewCount) {
+      lastLoadedIssueRef.current = currentKey;
+      lastCommentsCountRef.current = commentsList.length;
+
+      if (sortedComments.length > 0) {
+        setExpandedCommentIds((prev) => {
+          const next = new Set<string>();
+          if (sortedComments.length <= 2) {
+            sortedComments.forEach((c) => next.add(c.id));
+          } else {
+            // Expand the first (newest) comment by default
+            next.add(sortedComments[0].id);
+            // If same issue and user had expanded others, keep them
+            if (!isNewIssue) {
+              prev.forEach((id) => next.add(id));
+            }
+          }
+          return next;
+        });
+      } else {
+        setExpandedCommentIds(new Set());
+      }
+    }
+  }, [currentKey, commentsList.length, sortedComments]);
+
+  const toggleComment = (id: string) => {
+    setExpandedCommentIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const expandAllComments = () => {
+    setExpandedCommentIds(new Set(sortedComments.map((c) => c.id)));
+  };
+
+  const collapseAllComments = () => {
+    setExpandedCommentIds(new Set());
+  };
+
   const handleAddComment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!commentText.trim()) return;
 
     setCommenting(true);
     try {
-      await jiraApi.addComment(currentKey, commentText.trim());
+      const res = await jiraApi.addComment(currentKey, commentText.trim());
       toast.success('Đã thêm bình luận thành công!');
+      const newCommentId = res?.data?.id ? String(res.data.id) : null;
       setCommentText('');
       await loadIssue(currentKey);
+      if (newCommentId) {
+        setExpandedCommentIds((prev) => new Set([...prev, newCommentId]));
+      }
     } catch (err: any) {
-      toast.error('Không thể đăng bình luận');
+      const errMsg = err.response?.data?.message || err.response?.data?.error || err.message || 'Không thể đăng bình luận';
+      toast.error(`Không thể đăng bình luận: ${typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg)}`);
     } finally {
       setCommenting(false);
     }
@@ -281,20 +391,24 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
   ).length;
   const subtasksPercent = subtasks.length > 0 ? Math.round((completedSubtasks / subtasks.length) * 100) : 0;
 
-  const commentsList = issue?.fields?.comment?.comments || [];
   const worklogsList = issue?.fields?.worklog?.worklogs || [];
   const attachments = issue?.fields?.attachment || [];
   const imageAttachments = attachments.filter((a) => a.mimeType?.startsWith('image/'));
   const docAttachments = attachments.filter((a) => !a.mimeType?.startsWith('image/'));
 
-  return (
+  return typeof document !== 'undefined' ? createPortal(
     <>
-      <div className={`fixed inset-0 z-50 flex items-center justify-center ${isExpanded ? 'p-1 sm:p-2 md:p-3' : 'p-3 sm:p-4 md:p-6'} bg-background/80 backdrop-blur-sm animate-in fade-in duration-200`}>
-        <div className={`bg-card border border-border shadow-2xl overflow-hidden flex flex-col transition-all duration-200 ${
-          isExpanded 
-            ? 'w-[99vw] h-[97vh] max-h-[97vh] max-w-none rounded-2xl' 
-            : 'w-full max-w-4xl max-h-[92dvh] rounded-3xl'
-        }`}>
+      <div 
+        className={`fixed inset-0 z-[70] flex items-center justify-center ${isExpanded ? 'p-1 sm:p-2 md:p-3' : 'p-3 sm:p-4 md:p-6'} bg-background/80 backdrop-blur-sm animate-in fade-in duration-200`}
+      >
+        <div 
+          className={`bg-card border border-border shadow-2xl overflow-hidden flex flex-col transition-all duration-200 ${
+            isExpanded 
+              ? 'w-[99vw] h-[97vh] max-h-[97vh] max-w-none rounded-2xl' 
+              : 'w-full max-w-4xl max-h-[92dvh] rounded-3xl'
+          }`}
+          onClick={(e) => e.stopPropagation()}
+        >
           {/* Header */}
           <div className="p-4 sm:p-6 border-b border-border bg-muted/30 flex items-start justify-between gap-3 shrink-0">
             <div className="space-y-1.5 min-w-0 flex-1">
@@ -318,9 +432,7 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
 
                 {issue?.fields?.parent && <ChevronRight className="w-3.5 h-3.5 text-muted-foreground" />}
 
-                {issue?.fields?.issuetype?.iconUrl && (
-                  <img src={issue.fields.issuetype.iconUrl} alt="" className="w-4 h-4 rounded shrink-0" />
-                )}
+                <IssueTypeIcon type={issue?.fields?.issuetype} className="w-4 h-4" />
                 
                 <span className="font-semibold text-muted-foreground">
                   {issue?.fields?.issuetype?.name || 'Issue'}
@@ -462,7 +574,12 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
                   <span className="text-muted-foreground">Priority:</span>
                   <span className="font-semibold text-foreground flex items-center gap-1">
                     {issue.fields.priority.iconUrl && (
-                      <img src={issue.fields.priority.iconUrl} alt="" className="w-3.5 h-3.5" />
+                      <img 
+                        src={getJiraProxyImageUrl(issue.fields.priority.iconUrl)} 
+                        alt="" 
+                        className="w-3.5 h-3.5 object-contain" 
+                        onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
+                      />
                     )}
                     <span>{issue.fields.priority.name}</span>
                   </span>
@@ -474,15 +591,12 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
                 <span className="text-muted-foreground">Assignee:</span>
                 {issue?.fields?.assignee ? (
                   <div className="flex items-center gap-1.5 font-semibold text-foreground">
-                    {issue.fields.assignee.avatarUrls?.['24x24'] ? (
-                      <img
-                        src={issue.fields.assignee.avatarUrls['24x24']}
-                        alt=""
-                        className="w-4 h-4 rounded-full"
-                      />
-                    ) : (
-                      <User className="w-3.5 h-3.5" />
-                    )}
+                    <JiraAvatar 
+                      avatarUrl={issue.fields.assignee.avatarUrls?.['24x24'] || issue.fields.assignee.avatarUrls?.['32x32']} 
+                      displayName={issue.fields.assignee.displayName}
+                      className="w-5 h-5"
+                      sizeText="text-[9px]"
+                    />
                     <span>{issue.fields.assignee.displayName}</span>
                   </div>
                 ) : (
@@ -495,15 +609,12 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
                 <div className="flex items-center gap-1.5">
                   <span className="text-muted-foreground">Reporter:</span>
                   <div className="flex items-center gap-1.5 font-semibold text-foreground">
-                    {issue.fields.reporter.avatarUrls?.['24x24'] ? (
-                      <img
-                        src={issue.fields.reporter.avatarUrls['24x24']}
-                        alt=""
-                        className="w-4 h-4 rounded-full"
-                      />
-                    ) : (
-                      <User className="w-3.5 h-3.5 text-muted-foreground" />
-                    )}
+                    <JiraAvatar 
+                      avatarUrl={issue.fields.reporter.avatarUrls?.['24x24'] || issue.fields.reporter.avatarUrls?.['32x32']} 
+                      displayName={issue.fields.reporter.displayName}
+                      className="w-5 h-5"
+                      sizeText="text-[9px]"
+                    />
                     <span>{issue.fields.reporter.displayName}</span>
                   </div>
                 </div>
@@ -976,26 +1087,237 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
                       </div>
                     </form>
 
+                    {/* Comments Header Bar */}
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-1 pb-0.5">
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-xs text-foreground uppercase tracking-wider">
+                          Bình luận ({sortedComments.length})
+                        </span>
+                        {sortedComments.length > 0 && (
+                          <span className="text-[11px] text-muted-foreground font-mono">
+                            ({expandedCommentIds.size}/{sortedComments.length} đang mở)
+                          </span>
+                        )}
+                      </div>
+
+                      {sortedComments.length > 0 && (
+                        <div className="flex items-center gap-2">
+                          {/* Sort Toggle */}
+                          <button
+                            type="button"
+                            onClick={() => setCommentSortOrder((prev) => (prev === 'desc' ? 'asc' : 'desc'))}
+                            className="px-2.5 py-1 text-xs font-semibold rounded-lg border border-border bg-card hover:bg-accent text-foreground transition flex items-center gap-1.5 shadow-2xs"
+                            title={commentSortOrder === 'desc' ? 'Đang xếp: Mới nhất trên đầu. Bấm để xếp Cũ nhất trước.' : 'Đang xếp: Cũ nhất trên đầu. Bấm để xếp Mới nhất trước.'}
+                          >
+                            <ArrowUpDown className="w-3.5 h-3.5 text-primary" />
+                            <span>{commentSortOrder === 'desc' ? 'Mới nhất trước' : 'Cũ nhất trước'}</span>
+                          </button>
+
+                          {/* Expand/Collapse All */}
+                          {expandedCommentIds.size === sortedComments.length ? (
+                            <button
+                              type="button"
+                              onClick={collapseAllComments}
+                              className="px-2.5 py-1 text-xs font-semibold rounded-lg border border-border bg-card hover:bg-accent text-muted-foreground hover:text-foreground transition flex items-center gap-1.5 shadow-2xs"
+                              title="Thu gọn tất cả bình luận"
+                            >
+                              <ChevronsDownUp className="w-3.5 h-3.5" />
+                              <span>Thu gọn tất cả</span>
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={expandAllComments}
+                              className="px-2.5 py-1 text-xs font-semibold rounded-lg border border-border bg-card hover:bg-accent text-primary transition flex items-center gap-1.5 shadow-2xs"
+                              title="Mở rộng tất cả bình luận"
+                            >
+                              <ChevronsUpDown className="w-3.5 h-3.5" />
+                              <span>Mở rộng tất cả</span>
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
                     {/* Comments List */}
-                    <div className="space-y-3">
-                      {commentsList.length === 0 ? (
-                        <p className="text-xs text-muted-foreground italic text-center py-6">No comments yet.</p>
+                    <div className="space-y-2.5">
+                      {sortedComments.length === 0 ? (
+                        <p className="text-xs text-muted-foreground italic text-center py-8">Chưa có bình luận nào trên công việc này.</p>
                       ) : (
-                        commentsList.map((c) => (
-                          <div key={c.id} className="p-3.5 rounded-2xl bg-muted/30 border border-border space-y-1.5 text-xs">
-                            <div className="flex items-center justify-between">
-                              <span className="font-bold text-foreground">
-                                {c.author?.displayName || 'Unknown Author'}
-                              </span>
-                              <span className="text-[11px] text-muted-foreground">
-                                {new Date(c.created).toLocaleString()}
-                              </span>
+                        sortedComments.map((c, index) => {
+                          const isNewest = index === 0 && commentSortOrder === 'desc';
+                          const isExpanded = expandedCommentIds.has(c.id);
+                          const relativeTime = formatRelativeTime(c.created);
+                          const exactDateTime = new Date(c.created).toLocaleString('vi-VN');
+
+                          if (!isExpanded) {
+                            // Collapsed compact row
+                            return (
+                              <div
+                                key={c.id}
+                                onClick={() => toggleComment(c.id)}
+                                className="group rounded-xl bg-card border border-border/80 hover:border-primary/50 transition cursor-pointer p-2.5 px-3 flex items-center justify-between gap-3 text-xs select-none shadow-2xs hover:bg-accent/40"
+                                title="Bấm để mở rộng chi tiết bình luận này"
+                              >
+                                <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                                  <button
+                                    type="button"
+                                    className="p-0.5 -ml-1 rounded text-muted-foreground group-hover:text-primary transition shrink-0"
+                                    title="Mở rộng bình luận"
+                                  >
+                                    <ChevronRight className="w-4 h-4" />
+                                  </button>
+
+                                  <JiraAvatar
+                                    avatarUrl={c.author?.avatarUrls?.['24x24'] || c.author?.avatarUrls?.['32x32']}
+                                    displayName={c.author?.displayName}
+                                    className="w-5 h-5 shrink-0"
+                                    sizeText="text-[9px]"
+                                  />
+
+                                  <span className="font-bold text-foreground shrink-0 text-xs">
+                                    {c.author?.displayName || 'Unknown Author'}
+                                  </span>
+
+                                  {isNewest && (
+                                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/25 shrink-0">
+                                      Mới nhất
+                                    </span>
+                                  )}
+
+                                  <span className="text-muted-foreground truncate text-[11px] flex-1">
+                                    — {getCommentSnippet(c.body)}
+                                  </span>
+                                </div>
+
+                                <div className="flex items-center gap-2 shrink-0 text-xs">
+                                  <span
+                                    className="font-semibold text-primary dark:text-primary/90 bg-primary/10 px-2 py-0.5 rounded-md text-[11px] shrink-0"
+                                    title={`Thời gian gửi: ${exactDateTime}`}
+                                  >
+                                    {relativeTime}
+                                  </span>
+                                  <span className="text-[11px] text-muted-foreground hidden sm:inline" title={exactDateTime}>
+                                    {new Date(c.created).toLocaleDateString()}
+                                  </span>
+                                  <ChevronDown className="w-3.5 h-3.5 text-muted-foreground group-hover:text-primary transition opacity-60 group-hover:opacity-100 shrink-0" />
+                                </div>
+                              </div>
+                            );
+                          }
+
+                          // Expanded full card
+                          return (
+                            <div
+                              key={c.id}
+                              className="rounded-2xl bg-card border border-border shadow-2xs overflow-hidden transition-all duration-150 hover:border-primary/40 space-y-0"
+                            >
+                              {/* Header */}
+                              <div
+                                onClick={() => toggleComment(c.id)}
+                                className="p-3 bg-muted/30 hover:bg-muted/50 cursor-pointer flex items-center justify-between gap-3 select-none transition border-b border-border/60"
+                              >
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                  <button
+                                    type="button"
+                                    className="p-1 -ml-1 rounded text-muted-foreground hover:text-foreground transition shrink-0"
+                                    title="Thu gọn bình luận"
+                                  >
+                                    <ChevronDown className="w-4 h-4 text-primary" />
+                                  </button>
+
+                                  <JiraAvatar
+                                    avatarUrl={c.author?.avatarUrls?.['24x24'] || c.author?.avatarUrls?.['32x32']}
+                                    displayName={c.author?.displayName}
+                                    className="w-5 h-5 shrink-0"
+                                    sizeText="text-[9px]"
+                                  />
+
+                                  <span className="font-bold text-foreground text-xs truncate">
+                                    {c.author?.displayName || 'Unknown Author'}
+                                  </span>
+
+                                  {isNewest && (
+                                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/25 shrink-0">
+                                      Mới nhất
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="flex items-center gap-2 shrink-0 text-xs">
+                                  <span
+                                    className="font-semibold text-primary dark:text-primary/90 bg-primary/10 px-2 py-0.5 rounded-md text-[11px]"
+                                    title={`Thời gian gửi: ${exactDateTime}`}
+                                  >
+                                    {relativeTime}
+                                  </span>
+                                  <span className="text-[11px] text-muted-foreground hidden sm:inline" title={exactDateTime}>
+                                    • {new Date(c.created).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} {new Date(c.created).toLocaleDateString()}
+                                  </span>
+                                  <ChevronUp className="w-3.5 h-3.5 text-muted-foreground hover:text-primary transition shrink-0" />
+                                </div>
+                              </div>
+
+                              {/* Body */}
+                              <div className="p-3.5 text-xs text-foreground leading-relaxed max-h-[480px] overflow-y-auto">
+                                <div className="prose prose-xs sm:prose-sm dark:prose-invert max-w-none space-y-2">
+                                  <ReactMarkdown
+                                    remarkPlugins={[remarkGfm]}
+                                    components={{
+                                      img: ({ src, alt }) => (
+                                        <img
+                                          src={src}
+                                          alt={alt || 'Image'}
+                                          onClick={() => src && setPreviewImage({ url: src, title: alt || 'Comment Image' })}
+                                          className="rounded-xl border border-border/80 shadow-xs hover:border-primary/60 transition cursor-zoom-in max-w-full max-h-[350px] object-contain my-2 bg-muted/20"
+                                          loading="lazy"
+                                        />
+                                      ),
+                                      a: ({ href, children }) => (
+                                        <a href={href} target="_blank" rel="noreferrer" className="text-blue-600 dark:text-blue-400 hover:underline font-medium break-all inline-flex items-center gap-0.5">
+                                          <span>{children}</span>
+                                          <ExternalLink className="w-3 h-3 shrink-0" />
+                                        </a>
+                                      ),
+                                      code: ({ children }) => (
+                                        <code className="bg-muted px-1.5 py-0.5 rounded font-mono text-[11px] text-foreground border border-border/50">
+                                          {children}
+                                        </code>
+                                      ),
+                                      pre: ({ children }) => (
+                                        <pre className="p-3 bg-muted/80 rounded-xl overflow-x-auto text-xs my-2 border border-border/70 font-mono">
+                                          {children}
+                                        </pre>
+                                      ),
+                                      p: ({ children }) => <p className="mb-1.5 leading-relaxed">{children}</p>,
+                                      ul: ({ children }) => <ul className="list-disc pl-5 space-y-1 my-1">{children}</ul>,
+                                      ol: ({ children }) => <ol className="list-decimal pl-5 space-y-1 my-1">{children}</ol>,
+                                      table: ({ children }) => (
+                                        <div className="overflow-x-auto my-2 rounded-lg border border-border">
+                                          <table className="min-w-full divide-y divide-border text-xs">{children}</table>
+                                        </div>
+                                      ),
+                                      th: ({ children }) => (
+                                        <th className="px-3 py-1.5 bg-muted/60 font-bold text-foreground border-b border-border text-left">
+                                          {children}
+                                        </th>
+                                      ),
+                                      td: ({ children }) => (
+                                        <td className="px-3 py-1.5 border-b border-border/50 text-foreground">
+                                          {children}
+                                        </td>
+                                      ),
+                                    }}
+                                  >
+                                    {typeof c.body === 'string'
+                                      ? convertJiraWikiToMarkdown(c.body, attachments, activeToken)
+                                      : renderAdfToMarkdown(c.body, attachments, activeToken)}
+                                  </ReactMarkdown>
+                                </div>
+                              </div>
                             </div>
-                            <div className="text-foreground whitespace-pre-wrap leading-relaxed">
-                              {renderAdfToText(c.body)}
-                            </div>
-                          </div>
-                        ))
+                          );
+                        })
                       )}
                     </div>
                   </div>
@@ -1087,7 +1409,6 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
       {previewImage && (
         <div 
           className="fixed inset-0 z-[100] bg-black/85 backdrop-blur-sm flex flex-col animate-in fade-in duration-200"
-          onClick={() => setPreviewImage(null)}
         >
           <div 
             className="p-4 flex items-center justify-between text-white shrink-0 bg-gradient-to-b from-black/80 to-transparent"
@@ -1137,6 +1458,7 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
           </div>
         </div>
       )}
-    </>
-  );
+    </>,
+    document.body
+  ) : null;
 };

@@ -28,7 +28,20 @@ getDb();
 
 // Middlewares
 app.use(helmet({
-  crossOriginResourcePolicy: false // Allow images to be loaded from anywhere
+  crossOriginResourcePolicy: false,
+  crossOriginEmbedderPolicy: false,
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'", "https:", "data:", "blob:"],
+      connectSrc: ["'self'", "https:", "http:", "ws:", "wss:"],
+      imgSrc: ["'self'", "https:", "http:", "data:", "blob:"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "https:"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https:"],
+      fontSrc: ["'self'", "https:", "data:"],
+      frameSrc: ["'self'", "https:"],
+      objectSrc: ["'none'"]
+    }
+  }
 }));
 
 const allowedOrigin = process.env.ALLOWED_ORIGIN || '*';
@@ -110,6 +123,26 @@ if (process.env.NODE_ENV !== 'test') {
   server = app.listen(PORT, () => {
     console.log(`🚀 DevToolkit Backend running on http://localhost:${PORT}`);
     console.log(`📁 Persistent Data directory: ${getDataDir()}`);
+  });
+
+  // Hot-Restart Watcher: When dist/index.js is rebuilt on disk, smoothly exit so NSSM instantly relaunches the new build
+  const startupTime = Date.now();
+  const entryFile = path.resolve(__dirname, 'index.js');
+  fs.watchFile(entryFile, { interval: 2000 }, (curr, prev) => {
+    if (curr.mtimeMs > prev.mtimeMs && curr.mtimeMs > startupTime) {
+      console.log('🔄 New backend build detected in dist/index.js. Restarting service cleanly via NSSM...');
+      setTimeout(() => {
+        if (server) {
+          server.close(() => {
+            closeDb();
+            process.exit(0);
+          });
+        } else {
+          closeDb();
+          process.exit(0);
+        }
+      }, 500);
+    }
   });
 }
 
