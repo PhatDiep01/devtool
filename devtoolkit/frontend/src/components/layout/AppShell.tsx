@@ -51,7 +51,7 @@ export const AppShell: React.FC = () => {
   }, []);
 
   return (
-    <div className="flex h-screen h-[100dvh] w-full max-w-full overflow-hidden bg-background text-foreground">
+    <div className="fixed inset-0 flex w-full h-full max-w-full overflow-hidden bg-background text-foreground">
       {/* Responsive 2-Level Collapsible Sidebar */}
       <Sidebar 
         isMobileOpen={isMobileNavOpen} 
@@ -61,7 +61,7 @@ export const AppShell: React.FC = () => {
       />
 
       {/* Main Container */}
-      <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
+      <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden relative">
         <Topbar 
           onOpenCommand={() => setIsCommandOpen(true)} 
           onToggleMobileNav={() => setIsMobileNavOpen(!isMobileNavOpen)}
@@ -101,7 +101,7 @@ export const AppShell: React.FC = () => {
           </div>
         )}
 
-        <main className="flex-1 min-w-0 overflow-x-hidden overflow-y-auto scrollbar-thin">
+        <main className="flex-1 min-w-0 overflow-x-hidden overflow-y-auto scrollbar-thin overscroll-y-contain">
           <ErrorBoundary>
             <Outlet />
           </ErrorBoundary>

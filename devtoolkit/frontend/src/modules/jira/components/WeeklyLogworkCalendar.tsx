@@ -12,7 +12,9 @@ import {
   Filter,
   Sparkles,
   TrendingUp,
-  AlertCircle
+  AlertCircle,
+  Trash2,
+  Edit3
 } from 'lucide-react';
 import { WeeklyCalendarResponse, WeeklyCalendarDay, JiraWorklogItem } from '../../../types';
 
@@ -23,6 +25,8 @@ interface WeeklyLogworkCalendarProps {
   onResetToCurrentWeek: () => void;
   onSelectDayForLog: (dateStr: string) => void;
   onOpenIssueDetail: (issueKey: string) => void;
+  onEditWorklog?: (w: JiraWorklogItem) => void;
+  onDeleteWorklog?: (w: JiraWorklogItem) => void;
   currentWeekOffset: number;
 }
 
@@ -33,6 +37,8 @@ export const WeeklyLogworkCalendar: React.FC<WeeklyLogworkCalendarProps> = ({
   onResetToCurrentWeek,
   onSelectDayForLog,
   onOpenIssueDetail,
+  onEditWorklog,
+  onDeleteWorklog,
   currentWeekOffset
 }) => {
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
@@ -439,10 +445,38 @@ export const WeeklyLogworkCalendar: React.FC<WeeklyLogworkCalendarProps> = ({
                       )}
                     </div>
 
-                    {/* Time spent */}
-                    <span className="text-xs font-extrabold font-mono text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-lg border border-emerald-500/20 shrink-0">
-                      {w.timeSpent}
-                    </span>
+                    {/* Time spent & Actions */}
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span className="text-xs font-extrabold font-mono text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-lg border border-emerald-500/20 shrink-0">
+                        {w.timeSpent}
+                      </span>
+                      {onEditWorklog && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onEditWorklog(w);
+                          }}
+                          className="p-1 rounded-md text-muted-foreground hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-500/10 transition"
+                          title="Chỉnh sửa log work"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      {onDeleteWorklog && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onDeleteWorklog(w);
+                          }}
+                          className="p-1 rounded-md text-muted-foreground hover:text-red-600 dark:hover:text-red-400 hover:bg-red-500/10 transition"
+                          title="Xóa log work"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   {/* Summary */}

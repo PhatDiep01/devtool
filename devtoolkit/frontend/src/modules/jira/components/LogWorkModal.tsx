@@ -16,8 +16,15 @@ import {
 import { jiraApi } from '../../../services/api';
 import { JiraIssue, JiraAssignedSubtask } from '../../../types';
 import { SubtaskPicker } from './SubtaskPicker';
+import { WorklogDescriptionSuggestions } from './WorklogDescriptionSuggestions';
 import { toast } from 'react-hot-toast';
 import { DateTimePicker } from '../../../components/ui';
+
+import { 
+  parseTimePreview, 
+  formatSecondsToDuration, 
+  extractSubtaskEstimates 
+} from '../../../utils/jiraTime';
 
 interface LogWorkModalProps {
   isOpen: boolean;
@@ -25,73 +32,6 @@ interface LogWorkModalProps {
   onSuccess?: () => void;
   initialIssueKey?: string;
   initialIssueSummary?: string;
-}
-
-// Client-side parser preview helper
-function parseTimePreview(input: string): { valid: boolean; text: string; seconds: number } {
-  if (!input || !input.trim()) {
-    return { valid: false, text: 'e.g. 1h 30m, 45m, 2h, 1d, 1.5', seconds: 0 };
-  }
-
-  const trimmed = input.trim().toLowerCase().replace(/(\d+),(\d+)/g, '$1.$2');
-
-  // Pure number treated as hours
-  if (/^\d+(\.\d+)?$/.test(trimmed)) {
-    const hours = parseFloat(trimmed);
-    const secs = Math.round(hours * 3600);
-    const h = Math.floor(secs / 3600);
-    const m = Math.floor((secs % 3600) / 60);
-    return {
-      valid: true,
-      text: `${h > 0 ? `${h}h ` : ''}${m > 0 ? `${m}m` : ''} (${secs.toLocaleString()} seconds)`,
-      seconds: secs
-    };
-  }
-
-  // Colon HH:MM format
-  const colon = /^(\d+):(\d{1,2})$/.exec(trimmed);
-  if (colon) {
-    const h = parseInt(colon[1], 10);
-    const m = parseInt(colon[2], 10);
-    const secs = h * 3600 + m * 60;
-    return {
-      valid: true,
-      text: `${h}h ${m}m (${secs.toLocaleString()} seconds)`,
-      seconds: secs
-    };
-  }
-
-  let totalSeconds = 0;
-  const regex = /(\d+(?:\.\d+)?)\s*(w|d|h|m|s)/g;
-  let match;
-  let count = 0;
-
-  while ((match = regex.exec(trimmed)) !== null) {
-    count++;
-    const val = parseFloat(match[1]);
-    const unit = match[2];
-    if (unit === 'w') totalSeconds += val * 5 * 8 * 3600;
-    else if (unit === 'd') totalSeconds += val * 8 * 3600;
-    else if (unit === 'h') totalSeconds += val * 3600;
-    else if (unit === 'm') totalSeconds += val * 60;
-    else if (unit === 's') totalSeconds += val;
-  }
-
-  if (count > 0 && totalSeconds > 0) {
-    const secs = Math.round(totalSeconds);
-    const hours = Math.floor(secs / 3600);
-    const minutes = Math.floor((secs % 3600) / 60);
-    const parts: string[] = [];
-    if (hours > 0) parts.push(`${hours}h`);
-    if (minutes > 0) parts.push(`${minutes}m`);
-    return {
-      valid: true,
-      text: `${parts.join(' ') || '0m'} (${secs.toLocaleString()} seconds)`,
-      seconds: secs
-    };
-  }
-
-  return { valid: false, text: 'Unrecognized format. Try "1h 30m", "45m", "2h", "1d"', seconds: 0 };
 }
 
 export const LogWorkModal: React.FC<LogWorkModalProps> = ({
@@ -106,6 +46,8 @@ export const LogWorkModal: React.FC<LogWorkModalProps> = ({
   const [issueStatus, setIssueStatus] = useState<string | null>(null);
   const [inputMode, setInputMode] = useState<'subtask' | 'manual'>(initialIssueKey ? 'manual' : 'subtask');
   const [timeSpent, setTimeSpent] = useState('1h');
+  const [suggestedEstimate, setSuggestedEstimate] = useState<string | null>(null);
+  const [suggestedRemaining, setSuggestedRemaining] = useState<string | null>(null);
   const [started, setStarted] = useState(() => {
     const now = new Date();
     // format as YYYY-MM-DDTHH:mm
@@ -121,6 +63,8 @@ export const LogWorkModal: React.FC<LogWorkModalProps> = ({
       setIssueKey(initialIssueKey);
       setIssueSummary(initialIssueSummary);
       setInputMode(initialIssueKey ? 'manual' : 'subtask');
+      setSuggestedEstimate(null);
+      setSuggestedRemaining(null);
       if (initialIssueKey) {
         fetchIssueTimetracking(initialIssueKey);
       } else {
@@ -134,11 +78,36 @@ export const LogWorkModal: React.FC<LogWorkModalProps> = ({
       const res = await jiraApi.getIssue(key);
       const tt = res.data?.fields?.timetracking;
       setIssueStatus(res.data?.fields?.status?.name || null);
-      if (tt) {
-        setTaskTimetracking({
-          timeSpent: tt.timeSpent || (res.data?.fields?.timespent ? `${Math.round(res.data.fields.timespent / 3600)}h` : undefined),
-          remainingEstimate: tt.remainingEstimate || (res.data?.fields?.timeestimate ? `${Math.round(res.data.fields.timeestimate / 3600)}h` : undefined)
-        });
+      const origSec = typeof tt?.originalEstimateSeconds === 'number'
+        ? tt.originalEstimateSeconds
+        : (typeof res.data?.fields?.timeoriginalestimate === 'number' ? res.data.fields.timeoriginalestimate : 0);
+      const remSec = typeof tt?.remainingEstimateSeconds === 'number'
+        ? tt.remainingEstimateSeconds
+        : (typeof res.data?.fields?.timeestimate === 'number' ? res.data.fields.timeestimate : 0);
+      const spentSec = typeof tt?.timeSpentSeconds === 'number'
+        ? tt.timeSpentSeconds
+        : (typeof res.data?.fields?.timespent === 'number' ? res.data.fields.timespent : 0);
+
+      const origStr = tt?.originalEstimate || (origSec > 0 ? formatSecondsToDuration(origSec) : undefined);
+      const remStr = tt?.remainingEstimate || (res.data?.fields?.timeestimate !== undefined && res.data?.fields?.timeestimate !== null ? formatSecondsToDuration(remSec) : undefined);
+      const spentStr = tt?.timeSpent || (spentSec > 0 ? formatSecondsToDuration(spentSec) : undefined);
+
+      setTaskTimetracking({
+        timeSpent: spentStr,
+        remainingEstimate: remStr
+      });
+
+      const { estimate, remaining } = extractSubtaskEstimates({
+        originalEstimate: origStr,
+        remainingEstimate: remStr,
+        originalEstimateSeconds: origSec,
+        remainingEstimateSeconds: remSec
+      });
+
+      setSuggestedEstimate(estimate);
+      setSuggestedRemaining(remaining);
+      if (estimate && (!timeSpent || timeSpent === '1h')) {
+        setTimeSpent(estimate);
       }
     } catch {
       // ignore
@@ -164,6 +133,15 @@ export const LogWorkModal: React.FC<LogWorkModalProps> = ({
         timeSpent: st.timetracking.timeSpent,
         remainingEstimate: st.timetracking.remainingEstimate
       });
+      const { estimate, remaining } = extractSubtaskEstimates(st.timetracking);
+      setSuggestedEstimate(estimate);
+      setSuggestedRemaining(remaining);
+      if (estimate) {
+        setTimeSpent(estimate);
+      }
+    } else {
+      setSuggestedEstimate(null);
+      setSuggestedRemaining(null);
     }
     fetchIssueTimetracking(st.key);
   };
@@ -187,20 +165,34 @@ export const LogWorkModal: React.FC<LogWorkModalProps> = ({
       return;
     }
 
+    if (!started || !started.trim() || isNaN(new Date(started).getTime())) {
+      toast.error('Vui lòng chọn ngày và giờ bắt đầu hợp lệ');
+      return;
+    }
+
     setLoading(true);
     try {
+      const hasEstimate = Boolean(
+        taskTimetracking?.remainingEstimate &&
+        taskTimetracking.remainingEstimate !== 'Chưa đặt' &&
+        taskTimetracking.remainingEstimate !== 'Not set' &&
+        taskTimetracking.remainingEstimate !== '0m' &&
+        taskTimetracking.remainingEstimate !== '0h'
+      );
+
       await jiraApi.createWorklog(cleanKey, {
         timeSpent: timeSpent.trim(),
         timeSpentSeconds: preview.seconds,
         started: new Date(started).toISOString(),
-        comment: comment.trim() || undefined
+        comment: comment.trim() || undefined,
+        adjustEstimate: hasEstimate ? 'auto' : 'leave'
       });
 
       toast.success(`Đã ghi log thành công ${timeSpent} cho ${cleanKey}!`);
       onSuccess?.();
       onClose();
     } catch (err: any) {
-      const msg = err.response?.data?.error || err.response?.data?.message || err.message || 'Lỗi ghi log work vào Jira';
+      const msg = err.response?.data?.message || err.response?.data?.error || err.message || 'Lỗi ghi log work vào Jira';
       toast.error(typeof msg === 'string' ? msg : JSON.stringify(msg));
     } finally {
       setLoading(false);
@@ -353,14 +345,50 @@ export const LogWorkModal: React.FC<LogWorkModalProps> = ({
           {/* Flexible Time Spent Input */}
           <div className="space-y-1.5">
             <div className="flex flex-wrap items-center justify-between gap-1.5">
-              <label className="text-xs font-bold text-foreground">Thời gian làm việc (Time Spent) *</label>
+              <div className="flex items-center gap-2 flex-wrap">
+                <label className="text-xs font-bold text-foreground">Thời gian làm việc (Time Spent) *</label>
+                {suggestedEstimate && (
+                  <button
+                    type="button"
+                    onClick={() => setTimeSpent(suggestedEstimate)}
+                    className={`inline-flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded-md transition cursor-pointer border ${
+                      timeSpent === suggestedEstimate
+                        ? 'bg-amber-500/20 text-amber-600 dark:text-amber-400 border-amber-500/40 font-bold shadow-xs'
+                        : 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 border-amber-500/20 font-semibold'
+                    }`}
+                    title="Nhấn để áp dụng thời gian Estimate của Subtask đã chọn"
+                  >
+                    <Sparkles className="w-3 h-3 text-amber-500" />
+                    <span>Estimate: {suggestedEstimate}</span>
+                  </button>
+                )}
+                {suggestedRemaining && suggestedRemaining !== suggestedEstimate && (
+                  <button
+                    type="button"
+                    onClick={() => setTimeSpent(suggestedRemaining)}
+                    className={`inline-flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded-md transition cursor-pointer border ${
+                      timeSpent === suggestedRemaining
+                        ? 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border-emerald-500/40 font-bold shadow-xs'
+                        : 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border-emerald-500/20 font-semibold'
+                    }`}
+                    title="Nhấn để áp dụng thời gian Còn lại (Remaining) của Subtask"
+                  >
+                    <Clock className="w-3 h-3 text-emerald-500" />
+                    <span>Còn lại: {suggestedRemaining}</span>
+                  </button>
+                )}
+              </div>
               <div className="flex items-center gap-1 flex-wrap">
-                {['15m', '30m', '1h', '2h', '4h', '1d'].map((preset) => (
+                {['30m', '1h', '1h 30m', '2h', '3h 30m', '4h', '4h 30m', '7h 30m', '8h'].map((preset) => (
                   <button
                     key={preset}
                     type="button"
                     onClick={() => setTimeSpent(preset)}
-                    className="text-[10px] px-2 py-0.5 rounded-md bg-muted hover:bg-accent text-foreground font-mono transition"
+                    className={`text-[10px] px-2 py-0.5 rounded-md font-mono transition ${
+                      timeSpent === preset
+                        ? 'bg-primary text-primary-foreground font-bold shadow-xs'
+                        : 'bg-muted hover:bg-accent text-foreground'
+                    }`}
                   >
                     {preset}
                   </button>
@@ -371,19 +399,16 @@ export const LogWorkModal: React.FC<LogWorkModalProps> = ({
               type="text"
               value={timeSpent}
               onChange={(e) => setTimeSpent(e.target.value)}
-              placeholder="e.g. 1h 30m, 45m, 2h, 1d"
+              placeholder="Ví dụ: 4h 30m, 1h 30m, 45m, 4.5h, 2h"
               required
               className="w-full bg-background border border-border rounded-xl px-3.5 py-2.5 text-sm font-mono focus:outline-none focus:border-primary transition"
             />
-            {/* Real-time duration parser preview */}
-            <div className={`p-2.5 rounded-xl text-xs flex items-center gap-2 border ${
-              preview.valid 
-                ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20 font-semibold' 
-                : 'bg-muted/60 text-muted-foreground border-border'
-            }`}>
-              <Clock className="w-3.5 h-3.5 shrink-0" />
-              <span className="truncate">{preview.text}</span>
-            </div>
+            {!preview.valid && timeSpent.trim() && (
+              <p className="text-[11px] text-rose-500 dark:text-rose-400 font-medium flex items-center gap-1 pt-0.5">
+                <AlertTriangle className="w-3 h-3 shrink-0" />
+                <span>Định dạng chưa đúng (ví dụ: "4h 30m", "1h 30m", "45m", "2h", "4.5h")</span>
+              </p>
+            )}
           </div>
 
           {/* Date & Started Time */}
@@ -400,17 +425,27 @@ export const LogWorkModal: React.FC<LogWorkModalProps> = ({
             />
           </div>
 
-          {/* Work Description Comment */}
-          <div className="space-y-1.5">
-            <label className="text-xs font-bold text-foreground flex items-center justify-between">
-              <span>Mô tả công việc đã làm</span>
-              <span className="text-[10px] text-muted-foreground">Tự động đồng bộ Jira</span>
-            </label>
+          {/* Work Description Comment - OPTIONAL with Suggestions */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                <FileText className="w-3.5 h-3.5 text-muted-foreground" />
+                <span>Mô tả công việc (Không bắt buộc)</span>
+              </label>
+              <span className="text-[10px] text-muted-foreground bg-muted px-2 py-0.5 rounded-md font-normal">Tùy chọn</span>
+            </div>
+
+            <WorklogDescriptionSuggestions
+              subtaskTitle={issueSummary}
+              comment={comment}
+              onCommentChange={setComment}
+            />
+
             <textarea
               value={comment}
               onChange={(e) => setComment(e.target.value)}
               rows={3}
-              placeholder="Mô tả cụ thể những gì đã hoàn thành..."
+              placeholder="Không bắt buộc - Bấm chọn gợi ý bên trên hoặc tự nhập mô tả chi tiết..."
               className="w-full bg-background border border-border rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-primary resize-none transition"
             />
           </div>
@@ -427,7 +462,7 @@ export const LogWorkModal: React.FC<LogWorkModalProps> = ({
             </button>
             <button
               type="submit"
-              disabled={loading || !preview.valid || !issueKey.trim()}
+              disabled={loading || !preview.valid || !issueKey.trim() || !started}
               className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold transition shadow-sm disabled:opacity-50 flex items-center gap-1.5"
             >
               {loading ? (

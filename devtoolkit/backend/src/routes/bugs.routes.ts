@@ -161,8 +161,8 @@ router.get('/', (req: Request, res: Response) => {
 
     if (typeof search === 'string' && search.trim()) {
       const term = `%${search.trim()}%`;
-      query += ' AND (b.title LIKE ? OR b.us_key LIKE ? OR b.description LIKE ? OR b.fix_solution LIKE ?)';
-      params.push(term, term, term, term);
+      query += ' AND (b.title LIKE ? OR b.us_key LIKE ? OR b.description LIKE ? OR b.fix_solution LIKE ? OR b.payload LIKE ?)';
+      params.push(term, term, term, term, term);
     }
 
     if (typeof status === 'string' && status !== 'all' && status.trim()) {
@@ -335,10 +335,11 @@ router.post('/', (req: Request, res: Response) => {
       status = 'todo',
       severity = 'medium',
       description = '',
+      payload = null,
       fix_solution = '',
       attachments = [],
       created_by = 'QA',
-      assigned_to = ''
+      assigned_to = null
     } = req.body;
 
     if (!title || typeof title !== 'string' || !title.trim()) {
@@ -346,8 +347,8 @@ router.post('/', (req: Request, res: Response) => {
     }
 
     // Auto-generate Jira link if us_key provided and us_link is empty
-    let resolvedUsLink = us_link || '';
-    const cleanUsKey = (us_key || '').trim().toUpperCase();
+    let resolvedUsLink = (typeof us_link === 'string') ? us_link.trim() : '';
+    const cleanUsKey = (typeof us_key === 'string') ? us_key.trim().toUpperCase() : '';
     if (cleanUsKey && !resolvedUsLink) {
       // Default to Jira instance if us_key matches pattern
       if (/^[A-Z0-9]+-\d+$/.test(cleanUsKey)) {
@@ -356,16 +357,25 @@ router.post('/', (req: Request, res: Response) => {
     }
 
     const attachmentsJson = JSON.stringify(Array.isArray(attachments) ? attachments : []);
+    const cleanCreatedBy = (typeof created_by === 'string' && created_by.trim()) ? created_by.trim() : null;
+    const cleanAssignedTo = (typeof assigned_to === 'string' && assigned_to.trim()) ? assigned_to.trim() : null;
+    const cleanPayload = (typeof payload === 'string' && payload.trim()) 
+      ? payload.trim() 
+      : (payload && typeof payload === 'object' ? JSON.stringify(payload, null, 2) : null);
+    const cleanType = (typeof type === 'string' && type.trim()) ? type.trim().toUpperCase() : 'FE';
+    const cleanStatus = (typeof status === 'string' && status.trim()) ? status.trim() : 'todo';
+    const cleanSeverity = (typeof severity === 'string' && severity.trim()) ? severity.trim() : 'medium';
+
     const db = getDb();
 
     const insertStmt = db.prepare(`
       INSERT INTO bugs (
         title, us_key, us_link, type, status, severity, 
-        description, fix_solution, attachments, created_by, assigned_to,
+        description, payload, fix_solution, attachments, created_by, assigned_to,
         created_at, updated_at
       ) VALUES (
         ?, ?, ?, ?, ?, ?, 
-        ?, ?, ?, ?, ?, 
+        ?, ?, ?, ?, ?, ?, 
         datetime('now'), datetime('now')
       )
     `);
@@ -373,15 +383,16 @@ router.post('/', (req: Request, res: Response) => {
     const result = insertStmt.run(
       title.trim(),
       cleanUsKey || null,
-      resolvedUsLink.trim() || null,
-      type.toUpperCase(),
-      status,
-      severity,
-      description,
-      fix_solution,
+      resolvedUsLink || null,
+      cleanType,
+      cleanStatus,
+      cleanSeverity,
+      typeof description === 'string' ? description : '',
+      cleanPayload,
+      typeof fix_solution === 'string' ? fix_solution : '',
       attachmentsJson,
-      created_by.trim() || null,
-      assigned_to.trim() || null
+      cleanCreatedBy,
+      cleanAssignedTo
     );
 
     const newBug = db.prepare('SELECT * FROM bugs WHERE id = ?').get(result.lastInsertRowid);
@@ -413,17 +424,34 @@ router.put('/:id', (req: Request, res: Response) => {
       status = existing.status,
       severity = existing.severity,
       description = existing.description,
+      payload = existing.payload,
       fix_solution = existing.fix_solution,
       attachments = JSON.parse(existing.attachments || '[]'),
       created_by = existing.created_by,
       assigned_to = existing.assigned_to
     } = req.body;
 
-    let resolvedUsLink = us_link || '';
-    const cleanUsKey = (us_key || '').trim().toUpperCase();
+    const cleanTitle = (typeof title === 'string' && title.trim()) ? title.trim() : existing.title;
+    let resolvedUsLink = (typeof us_link === 'string') ? us_link.trim() : '';
+    const cleanUsKey = (typeof us_key === 'string') ? us_key.trim().toUpperCase() : '';
     if (cleanUsKey && !resolvedUsLink && /^[A-Z0-9]+-\d+$/.test(cleanUsKey)) {
       resolvedUsLink = `https://task.ascvn.com.vn/browse/${cleanUsKey}`;
     }
+
+    const cleanType = (typeof type === 'string' && type.trim()) ? type.trim().toUpperCase() : existing.type;
+    const cleanStatus = (typeof status === 'string' && status.trim()) ? status.trim() : existing.status;
+    const cleanSeverity = (typeof severity === 'string' && severity.trim()) ? severity.trim() : existing.severity;
+    const cleanDescription = description !== undefined ? (typeof description === 'string' ? description : '') : existing.description;
+    const cleanFixSolution = fix_solution !== undefined ? (typeof fix_solution === 'string' ? fix_solution : '') : existing.fix_solution;
+    const cleanPayload = payload !== undefined 
+      ? ((typeof payload === 'string' && payload.trim()) ? payload.trim() : (payload && typeof payload === 'object' ? JSON.stringify(payload, null, 2) : null))
+      : existing.payload;
+    const cleanCreatedBy = created_by !== undefined 
+      ? ((typeof created_by === 'string' && created_by.trim()) ? created_by.trim() : null)
+      : existing.created_by;
+    const cleanAssignedTo = assigned_to !== undefined 
+      ? ((typeof assigned_to === 'string' && assigned_to.trim()) ? assigned_to.trim() : null)
+      : existing.assigned_to;
 
     const attachmentsJson = JSON.stringify(Array.isArray(attachments) ? attachments : []);
 
@@ -475,6 +503,7 @@ router.put('/:id', (req: Request, res: Response) => {
         status = ?,
         severity = ?,
         description = ?,
+        payload = ?,
         fix_solution = ?,
         attachments = ?,
         created_by = ?,
@@ -482,17 +511,18 @@ router.put('/:id', (req: Request, res: Response) => {
         updated_at = datetime('now')
       WHERE id = ?
     `).run(
-      title.trim(),
+      cleanTitle,
       cleanUsKey || null,
-      resolvedUsLink.trim() || null,
-      type.toUpperCase(),
-      status,
-      severity,
-      description,
-      fix_solution,
+      resolvedUsLink || null,
+      cleanType,
+      cleanStatus,
+      cleanSeverity,
+      cleanDescription,
+      cleanPayload,
+      cleanFixSolution,
       attachmentsJson,
-      created_by ? created_by.trim() : null,
-      assigned_to ? assigned_to.trim() : null,
+      cleanCreatedBy,
+      cleanAssignedTo,
       id
     );
 

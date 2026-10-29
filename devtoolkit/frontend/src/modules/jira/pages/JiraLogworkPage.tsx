@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { 
   Clock, 
   Calendar as CalendarIcon, 
@@ -17,83 +18,25 @@ import {
   Filter,
   GitBranch,
   Layers,
-  AlertTriangle
+  AlertTriangle,
+  Edit3,
+  Trash2
 } from 'lucide-react';
 import { jiraApi } from '../../../services/api';
 import { useJiraAuthStore } from '../../../stores/jira-auth.store';
 import { JiraIssue, JiraWorklogItem, WeeklyCalendarResponse, JiraAssignedSubtask } from '../../../types';
 import { IssueDetailModal } from '../components/IssueDetailModal';
+import { EditWorklogModal, EditableWorklog } from '../components/EditWorklogModal';
 import { WeeklyLogworkCalendar } from '../components/WeeklyLogworkCalendar';
 import { SubtaskPicker } from '../components/SubtaskPicker';
-import { DateTimePicker } from '../../../components/ui';
+import { WorklogDescriptionSuggestions } from '../components/WorklogDescriptionSuggestions';
+import { DateTimePicker, ConfirmModal } from '../../../components/ui';
 import { toast } from 'react-hot-toast';
-
-// Client-side parser preview helper
-function parseTimePreview(input: string): { valid: boolean; text: string; seconds: number } {
-  if (!input || !input.trim()) {
-    return { valid: false, text: 'e.g. 1h 30m, 45m, 2h, 1d', seconds: 0 };
-  }
-
-  const trimmed = input.trim().toLowerCase().replace(/(\d+),(\d+)/g, '$1.$2');
-
-  // Pure decimal or number treated as hours
-  if (/^\d+(\.\d+)?$/.test(trimmed)) {
-    const hours = parseFloat(trimmed);
-    const secs = Math.round(hours * 3600);
-    const h = Math.floor(secs / 3600);
-    const m = Math.floor((secs % 3600) / 60);
-    return {
-      valid: true,
-      text: `${h > 0 ? `${h}h ` : ''}${m > 0 ? `${m}m` : ''} (${secs.toLocaleString()} seconds)`,
-      seconds: secs
-    };
-  }
-
-  // Colon HH:MM format
-  const colon = /^(\d+):(\d{1,2})$/.exec(trimmed);
-  if (colon) {
-    const h = parseInt(colon[1], 10);
-    const m = parseInt(colon[2], 10);
-    const secs = h * 3600 + m * 60;
-    return {
-      valid: true,
-      text: `${h}h ${m}m (${secs.toLocaleString()} seconds)`,
-      seconds: secs
-    };
-  }
-
-  let totalSeconds = 0;
-  const regex = /(\d+(?:\.\d+)?)\s*(w|d|h|m|s)/g;
-  let match;
-  let count = 0;
-
-  while ((match = regex.exec(trimmed)) !== null) {
-    count++;
-    const val = parseFloat(match[1]);
-    const unit = match[2];
-    if (unit === 'w') totalSeconds += val * 5 * 8 * 3600;
-    else if (unit === 'd') totalSeconds += val * 8 * 3600;
-    else if (unit === 'h') totalSeconds += val * 3600;
-    else if (unit === 'm') totalSeconds += val * 60;
-    else if (unit === 's') totalSeconds += val;
-  }
-
-  if (count > 0 && totalSeconds > 0) {
-    const secs = Math.round(totalSeconds);
-    const hours = Math.floor(secs / 3600);
-    const minutes = Math.floor((secs % 3600) / 60);
-    const parts: string[] = [];
-    if (hours > 0) parts.push(`${hours}h`);
-    if (minutes > 0) parts.push(`${minutes}m`);
-    return {
-      valid: true,
-      text: `${parts.join(' ') || '0m'} (${secs.toLocaleString()} seconds)`,
-      seconds: secs
-    };
-  }
-
-  return { valid: false, text: 'Format not recognized. Try "1h 30m" or "45m"', seconds: 0 };
-}
+import { 
+  parseTimePreview, 
+  formatSecondsToDuration, 
+  extractSubtaskEstimates 
+} from '../../../utils/jiraTime';
 
 export const JiraLogworkPage: React.FC = () => {
   const { user } = useJiraAuthStore();
@@ -105,6 +48,8 @@ export const JiraLogworkPage: React.FC = () => {
   const [selectedIssueStatus, setSelectedIssueStatus] = useState<string | null>(null);
   const [inputMode, setInputMode] = useState<'subtask' | 'manual'>('subtask');
   const [timeSpent, setTimeSpent] = useState('1h');
+  const [suggestedEstimate, setSuggestedEstimate] = useState<string | null>(null);
+  const [suggestedRemaining, setSuggestedRemaining] = useState<string | null>(null);
   const [started, setStarted] = useState(() => {
     const now = new Date();
     return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
@@ -117,6 +62,18 @@ export const JiraLogworkPage: React.FC = () => {
   const [recentWorklogs, setRecentWorklogs] = useState<JiraWorklogItem[]>([]);
   const [loadingInitial, setLoadingInitial] = useState(true);
   const [filterQuery, setFilterQuery] = useState('');
+  const [searchParams] = useSearchParams();
+
+  // Handle preselected issue from search navigation
+  useEffect(() => {
+    const targetKey = searchParams.get('issue') || searchParams.get('subtask') || searchParams.get('key');
+    if (targetKey) {
+      const clean = targetKey.trim().toUpperCase();
+      setIssueKey(clean);
+      setInputMode('manual');
+      loadTaskDetails(clean);
+    }
+  }, [searchParams]);
 
   // Weekly Calendar state
   const [calendarData, setCalendarData] = useState<WeeklyCalendarResponse | null>(null);
@@ -135,6 +92,41 @@ export const JiraLogworkPage: React.FC = () => {
   
   // Issue detail modal
   const [selectedDetailKey, setSelectedDetailKey] = useState<string | null>(null);
+
+  // Worklog edit & delete states
+  const [editingWorklog, setEditingWorklog] = useState<EditableWorklog | null>(null);
+  const [pendingDeleteWorklog, setPendingDeleteWorklog] = useState<{
+    id: string;
+    issueKey: string;
+    issueSummary?: string;
+    timeSpent: string;
+    started?: string;
+    author?: string;
+  } | null>(null);
+  const [isDeletingWorklog, setIsDeletingWorklog] = useState(false);
+
+  const handleWorklogMutationSuccess = () => {
+    loadPageData();
+    loadWeeklyCalendar(weekOffset);
+    if (issueKey.trim()) {
+      loadTaskDetails(issueKey.trim());
+    }
+  };
+
+  const executeDeleteWorklog = async () => {
+    if (!pendingDeleteWorklog) return;
+    setIsDeletingWorklog(true);
+    try {
+      await jiraApi.deleteWorklog(pendingDeleteWorklog.issueKey, pendingDeleteWorklog.id);
+      toast.success(`Đã xóa lượt log work (${pendingDeleteWorklog.timeSpent}) thành công!`);
+      handleWorklogMutationSuccess();
+    } catch (err: any) {
+      toast.error(`Xóa log work thất bại: ${err.response?.data?.message || err.message}`);
+    } finally {
+      setIsDeletingWorklog(false);
+      setPendingDeleteWorklog(null);
+    }
+  };
 
   useEffect(() => {
     loadPageData();
@@ -223,11 +215,38 @@ export const JiraLogworkPage: React.FC = () => {
         setIssueSummary(issueRes.data.fields?.summary || '');
         setSelectedIssueStatus(issueRes.data.fields?.status?.name || null);
         const tt = issueRes.data.fields?.timetracking;
+        const origSec = typeof tt?.originalEstimateSeconds === 'number'
+          ? tt.originalEstimateSeconds
+          : (typeof issueRes.data.fields?.timeoriginalestimate === 'number' ? issueRes.data.fields.timeoriginalestimate : 0);
+        const remSec = typeof tt?.remainingEstimateSeconds === 'number'
+          ? tt.remainingEstimateSeconds
+          : (typeof issueRes.data.fields?.timeestimate === 'number' ? issueRes.data.fields.timeestimate : 0);
+        const spentSec = typeof tt?.timeSpentSeconds === 'number'
+          ? tt.timeSpentSeconds
+          : (typeof issueRes.data.fields?.timespent === 'number' ? issueRes.data.fields.timespent : 0);
+
+        const origStr = tt?.originalEstimate || (origSec > 0 ? formatSecondsToDuration(origSec) : 'None');
+        const remStr = tt?.remainingEstimate || (issueRes.data.fields?.timeestimate !== undefined && issueRes.data.fields?.timeestimate !== null ? formatSecondsToDuration(remSec) : 'Not set');
+        const spentStr = tt?.timeSpent || (spentSec > 0 ? formatSecondsToDuration(spentSec) : '0m');
+
         setTaskTimetracking({
-          timeSpent: tt?.timeSpent || (issueRes.data.fields?.timespent ? `${Math.round(issueRes.data.fields.timespent / 3600)}h` : '0m'),
-          remainingEstimate: tt?.remainingEstimate || (issueRes.data.fields?.timeestimate ? `${Math.round(issueRes.data.fields.timeestimate / 3600)}h` : 'Not set'),
-          originalEstimate: tt?.originalEstimate || 'None'
+          timeSpent: spentStr,
+          remainingEstimate: remStr,
+          originalEstimate: origStr
         });
+
+        const { estimate, remaining } = extractSubtaskEstimates({
+          originalEstimate: origStr,
+          remainingEstimate: remStr,
+          originalEstimateSeconds: origSec,
+          remainingEstimateSeconds: remSec
+        });
+
+        setSuggestedEstimate(estimate);
+        setSuggestedRemaining(remaining);
+        if (estimate && (!timeSpent || timeSpent === '1h')) {
+          setTimeSpent(estimate);
+        }
       }
 
       setTaskWorklogs(worklogsRes.data?.worklogs || []);
@@ -265,9 +284,28 @@ export const JiraLogworkPage: React.FC = () => {
         remainingEstimate: st.timetracking.remainingEstimate || 'Not set',
         originalEstimate: st.timetracking.originalEstimate || 'None'
       });
+      const { estimate, remaining } = extractSubtaskEstimates(st.timetracking);
+      setSuggestedEstimate(estimate);
+      setSuggestedRemaining(remaining);
+      if (estimate) {
+        setTimeSpent(estimate);
+      }
+    } else {
+      setSuggestedEstimate(null);
+      setSuggestedRemaining(null);
     }
     loadTaskDetails(st.key);
   };
+
+  // Auto-fetch task details when valid issue key is entered in manual mode
+  useEffect(() => {
+    if (inputMode === 'manual' && issueKey.trim().match(/^[A-Z0-9]+-\d+$/i)) {
+      const timer = setTimeout(() => {
+        loadTaskDetails(issueKey.trim().toUpperCase());
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [issueKey, inputMode]);
 
   const preview = parseTimePreview(timeSpent);
 
@@ -285,13 +323,27 @@ export const JiraLogworkPage: React.FC = () => {
       return;
     }
 
+    if (!started || !started.trim() || isNaN(new Date(started).getTime())) {
+      toast.error('Vui lòng chọn ngày và giờ bắt đầu hợp lệ');
+      return;
+    }
+
     setSubmitting(true);
     try {
+      const hasEstimate = Boolean(
+        taskTimetracking?.remainingEstimate &&
+        taskTimetracking.remainingEstimate !== 'Chưa đặt' &&
+        taskTimetracking.remainingEstimate !== 'Not set' &&
+        taskTimetracking.remainingEstimate !== '0m' &&
+        taskTimetracking.remainingEstimate !== '0h'
+      );
+
       await jiraApi.createWorklog(cleanKey, {
         timeSpent: timeSpent.trim(),
         timeSpentSeconds: preview.seconds,
         started: new Date(started).toISOString(),
-        comment: comment.trim() || undefined
+        comment: comment.trim() || undefined,
+        adjustEstimate: hasEstimate ? 'auto' : 'leave'
       });
 
       toast.success(`Đã ghi log thành công ${timeSpent} cho ${cleanKey}!`);
@@ -305,7 +357,7 @@ export const JiraLogworkPage: React.FC = () => {
         await loadTaskDetails(cleanKey);
       }
     } catch (err: any) {
-      const msg = err.response?.data?.error || err.response?.data?.message || err.message || 'Lỗi ghi log work vào Jira';
+      const msg = err.response?.data?.message || err.response?.data?.error || err.message || 'Lỗi ghi log work vào Jira';
       toast.error(typeof msg === 'string' ? msg : JSON.stringify(msg));
     } finally {
       setSubmitting(false);
@@ -340,14 +392,14 @@ export const JiraLogworkPage: React.FC = () => {
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h1 className="text-xl sm:text-2xl font-extrabold text-foreground tracking-tight">
-                  Log Work & Timesheet
+                <h1 className="text-xl sm:text-2xl font-bold text-foreground tracking-tight">
+                  Chấm công Log Work & Timesheet
                 </h1>
-                <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
+                <span className="px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
                   Jira Server / DC
                 </span>
               </div>
-              <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">
+              <p className="text-xs sm:text-sm text-muted-foreground mt-0.5 leading-relaxed">
                 Ghi nhận thời gian làm việc trực tiếp vào Jira, theo dõi lịch tuần, số lượng Task và Subtask hoàn thành.
               </p>
             </div>
@@ -360,7 +412,7 @@ export const JiraLogworkPage: React.FC = () => {
                 loadWeeklyCalendar(weekOffset);
               }}
               disabled={loadingInitial || loadingCalendar}
-              className="p-2.5 rounded-xl border border-border bg-background hover:bg-accent text-muted-foreground hover:text-foreground transition flex items-center gap-1.5 text-xs font-semibold"
+              className="p-2.5 rounded-xl border border-border bg-background hover:bg-accent text-muted-foreground hover:text-foreground transition flex items-center gap-1.5 text-xs font-semibold shadow-xs"
               title="Làm mới bảng logwork"
             >
               <RefreshCw className={`w-4 h-4 ${loadingInitial || loadingCalendar ? 'animate-spin' : ''}`} />
@@ -378,17 +430,33 @@ export const JiraLogworkPage: React.FC = () => {
         onResetToCurrentWeek={handleResetToCurrentWeek}
         onSelectDayForLog={handleSelectDayForLog}
         onOpenIssueDetail={(key) => setSelectedDetailKey(key)}
+        onEditWorklog={(w) => setEditingWorklog({
+          id: w.worklogId,
+          issueKey: w.issueKey,
+          issueSummary: w.issueSummary,
+          timeSpent: w.timeSpent,
+          started: w.started,
+          commentText: w.commentText
+        })}
+        onDeleteWorklog={(w) => setPendingDeleteWorklog({
+          id: w.worklogId,
+          issueKey: w.issueKey,
+          issueSummary: w.issueSummary,
+          timeSpent: w.timeSpent,
+          started: w.started,
+          author: w.author?.displayName
+        })}
         currentWeekOffset={weekOffset}
       />
 
       {/* 3. MAIN WORK SECTION: LOG FORM (LEFT) & WORKLOG HISTORY (RIGHT) */}
       <div ref={formRef} className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Left Form: Log Work */}
-        <div className="lg:col-span-5 bg-card border border-border rounded-3xl p-5 sm:p-7 shadow-sm space-y-5">
+        <div className="lg:col-span-5 bg-card border border-border rounded-2xl p-5 sm:p-6 shadow-xs space-y-5">
           <div className="flex items-center justify-between border-b border-border/70 pb-3">
             <div className="flex items-center gap-2">
               <Sparkles className="w-4 h-4 text-blue-500" />
-              <h2 className="font-bold text-sm sm:text-base text-foreground">Ghi Nhận Giờ Làm Việc (Log Work)</h2>
+              <h2 className="font-semibold text-sm sm:text-base text-foreground">Ghi nhận giờ làm việc (Log work)</h2>
             </div>
           </div>
 
@@ -398,7 +466,7 @@ export const JiraLogworkPage: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setInputMode('subtask')}
-                className={`flex-1 py-1.5 px-2 rounded-lg font-bold transition flex items-center justify-center gap-1.5 ${
+                className={`flex-1 py-1.5 px-2 rounded-lg font-semibold transition flex items-center justify-center gap-1.5 ${
                   inputMode === 'subtask'
                     ? 'bg-primary text-primary-foreground shadow-xs'
                     : 'text-muted-foreground hover:text-foreground'
@@ -514,14 +582,50 @@ export const JiraLogworkPage: React.FC = () => {
             {/* Flexible Time Spent */}
             <div className="space-y-1.5">
               <div className="flex flex-wrap items-center justify-between gap-1.5">
-                <label className="text-xs font-bold text-foreground">Thời gian làm việc (Time Spent) *</label>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <label className="text-xs font-bold text-foreground">Thời gian làm việc (Time Spent) *</label>
+                  {suggestedEstimate && (
+                    <button
+                      type="button"
+                      onClick={() => setTimeSpent(suggestedEstimate)}
+                      className={`inline-flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded-md transition cursor-pointer border ${
+                        timeSpent === suggestedEstimate
+                          ? 'bg-amber-500/20 text-amber-600 dark:text-amber-400 border-amber-500/40 font-bold shadow-xs'
+                          : 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 border-amber-500/20 font-semibold'
+                      }`}
+                      title="Nhấn để áp dụng thời gian Estimate của Subtask đã chọn"
+                    >
+                      <Sparkles className="w-3 h-3 text-amber-500" />
+                      <span>Estimate: {suggestedEstimate}</span>
+                    </button>
+                  )}
+                  {suggestedRemaining && suggestedRemaining !== suggestedEstimate && (
+                    <button
+                      type="button"
+                      onClick={() => setTimeSpent(suggestedRemaining)}
+                      className={`inline-flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded-md transition cursor-pointer border ${
+                        timeSpent === suggestedRemaining
+                          ? 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border-emerald-500/40 font-bold shadow-xs'
+                          : 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border-emerald-500/20 font-semibold'
+                      }`}
+                      title="Nhấn để áp dụng thời gian Còn lại (Remaining) của Subtask"
+                    >
+                      <Clock className="w-3 h-3 text-emerald-500" />
+                      <span>Còn lại: {suggestedRemaining}</span>
+                    </button>
+                  )}
+                </div>
                 <div className="flex items-center gap-1 flex-wrap">
-                  {['15m', '30m', '1h', '2h', '4h', '1d'].map((preset) => (
+                  {['30m', '1h', '1h 30m', '2h', '3h 30m', '4h', '4h 30m', '7h 30m', '8h'].map((preset) => (
                     <button
                       key={preset}
                       type="button"
                       onClick={() => setTimeSpent(preset)}
-                      className="text-[10px] px-2 py-0.5 rounded-md bg-muted hover:bg-accent text-foreground font-mono transition"
+                      className={`text-[10px] px-2 py-0.5 rounded-md font-mono transition ${
+                        timeSpent === preset
+                          ? 'bg-primary text-primary-foreground font-bold shadow-xs'
+                          : 'bg-muted hover:bg-accent text-foreground'
+                      }`}
                     >
                       {preset}
                     </button>
@@ -532,27 +636,61 @@ export const JiraLogworkPage: React.FC = () => {
                 type="text"
                 value={timeSpent}
                 onChange={(e) => setTimeSpent(e.target.value)}
-                placeholder="e.g. 1h 30m, 45m, 2h, 1d"
+                placeholder="Ví dụ: 4h 30m, 1h 30m, 45m, 4.5h, 2h"
                 required
                 className="w-full bg-background border border-border rounded-xl px-3.5 py-2.5 text-sm font-mono focus:outline-none focus:border-primary transition"
               />
-              {/* Real-time parsing indicator */}
-              <div className={`p-2.5 rounded-xl text-xs flex items-center gap-2 border ${
-                preview.valid 
-                  ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20 font-semibold' 
-                  : 'bg-muted/60 text-muted-foreground border-border'
-              }`}>
-                <Clock className="w-3.5 h-3.5 shrink-0" />
-                <span className="truncate">{preview.text}</span>
-              </div>
+              {!preview.valid && timeSpent.trim() && (
+                <p className="text-[11px] text-rose-500 dark:text-rose-400 font-medium flex items-center gap-1 pt-0.5">
+                  <AlertTriangle className="w-3 h-3 shrink-0" />
+                  <span>Định dạng chưa đúng (ví dụ: "4h 30m", "1h 30m", "45m", "2h", "4.5h")</span>
+                </p>
+              )}
             </div>
 
             {/* Date & Started Time */}
             <div className="space-y-1.5">
-              <label className="text-xs font-bold text-foreground flex items-center gap-1.5">
-                <CalendarIcon className="w-3.5 h-3.5 text-muted-foreground" />
-                <span>Ngày & Giờ Bắt Đầu (Started Time) *</span>
-              </label>
+              <div className="flex flex-wrap items-center justify-between gap-1.5">
+                <label className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                  <CalendarIcon className="w-3.5 h-3.5 text-muted-foreground" />
+                  <span>Ngày & Giờ Bắt Đầu (Started Time) *</span>
+                </label>
+                <div className="flex items-center gap-1 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const now = new Date();
+                      setStarted(new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16));
+                    }}
+                    className="text-[10px] px-2 py-0.5 rounded-md bg-muted hover:bg-accent text-foreground font-semibold transition flex items-center gap-1"
+                  >
+                    <Sparkles className="w-3 h-3 text-indigo-500" />
+                    <span>Bây giờ</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const now = new Date();
+                      const d = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+                      setStarted(`${d}T08:30`);
+                    }}
+                    className="text-[10px] px-2 py-0.5 rounded-md bg-muted hover:bg-accent text-foreground font-semibold transition"
+                  >
+                    08:30
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const now = new Date();
+                      const d = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+                      setStarted(`${d}T13:30`);
+                    }}
+                    className="text-[10px] px-2 py-0.5 rounded-md bg-muted hover:bg-accent text-foreground font-semibold transition"
+                  >
+                    13:30
+                  </button>
+                </div>
+              </div>
               <DateTimePicker
                 value={started}
                 onChange={setStarted}
@@ -561,17 +699,28 @@ export const JiraLogworkPage: React.FC = () => {
               />
             </div>
 
-            {/* Comment */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold text-foreground flex items-center justify-between">
-                <span>Mô tả công việc đã làm (Description)</span>
-                <span className="text-[10px] text-muted-foreground">Tự động đồng bộ Jira</span>
-              </label>
+            {/* Comment - OPTIONAL with Suggestions */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                  <FileText className="w-3.5 h-3.5 text-muted-foreground" />
+                  <span>Mô tả công việc (Không bắt buộc)</span>
+                </label>
+                <span className="text-[10px] text-muted-foreground bg-muted px-2 py-0.5 rounded-md font-normal">Tùy chọn</span>
+              </div>
+
+              {/* Suggestions chips with 3 toggle buttons BE | FE | BA */}
+              <WorklogDescriptionSuggestions
+                subtaskTitle={issueSummary}
+                comment={comment}
+                onCommentChange={setComment}
+              />
+
               <textarea
                 value={comment}
                 onChange={(e) => setComment(e.target.value)}
                 rows={3}
-                placeholder="Mô tả cụ thể những gì đã thực hiện..."
+                placeholder="Không bắt buộc - Có thể chọn gợi ý bên trên hoặc tự nhập mô tả chi tiết..."
                 className="w-full bg-background border border-border rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-primary resize-none transition"
               />
             </div>
@@ -579,7 +728,7 @@ export const JiraLogworkPage: React.FC = () => {
             {/* Submit Button */}
             <button
               type="submit"
-              disabled={submitting || !preview.valid || !issueKey.trim()}
+              disabled={submitting || !preview.valid || !issueKey.trim() || !started}
               className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-bold rounded-2xl text-sm transition shadow-md shadow-blue-500/20 disabled:opacity-50 flex items-center justify-center gap-2"
             >
               {submitting ? (
@@ -668,9 +817,41 @@ export const JiraLogworkPage: React.FC = () => {
                             {w.started ? new Date(w.started).toLocaleString() : ''}
                           </span>
                         </div>
-                        <span className="font-mono font-extrabold text-blue-600 dark:text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-lg border border-blue-500/20">
-                          {w.timeSpent}
-                        </span>
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-mono font-extrabold text-blue-600 dark:text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-lg border border-blue-500/20">
+                            {w.timeSpent}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setEditingWorklog({
+                              id: w.id,
+                              issueKey: issueKey.trim().toUpperCase(),
+                              issueSummary: issueSummary,
+                              timeSpent: w.timeSpent,
+                              started: w.started,
+                              comment: w.comment
+                            })}
+                            className="p-1 rounded-md text-muted-foreground hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-500/10 transition"
+                            title="Chỉnh sửa log work"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setPendingDeleteWorklog({
+                              id: w.id,
+                              issueKey: issueKey.trim().toUpperCase(),
+                              issueSummary: issueSummary,
+                              timeSpent: w.timeSpent,
+                              started: w.started,
+                              author: w.author?.displayName
+                            })}
+                            className="p-1 rounded-md text-muted-foreground hover:text-red-600 dark:hover:text-red-400 hover:bg-red-500/10 transition"
+                            title="Xóa log work"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
                       {w.comment && (
                         <p className="text-xs text-foreground/90 whitespace-pre-line leading-relaxed">
@@ -726,9 +907,40 @@ export const JiraLogworkPage: React.FC = () => {
                         </span>
                       </div>
 
-                      <span className="font-mono font-extrabold text-xs text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-lg border border-emerald-500/20 shrink-0">
-                        {w.timeSpent}
-                      </span>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span className="font-mono font-extrabold text-xs text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-lg border border-emerald-500/20 shrink-0">
+                          {w.timeSpent}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setEditingWorklog({
+                            id: w.worklogId,
+                            issueKey: w.issueKey,
+                            issueSummary: w.issueSummary,
+                            timeSpent: w.timeSpent,
+                            started: w.started,
+                            commentText: w.commentText
+                          })}
+                          className="p-1 rounded-md text-muted-foreground hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-500/10 transition"
+                          title="Chỉnh sửa log work"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPendingDeleteWorklog({
+                            id: w.worklogId,
+                            issueKey: w.issueKey,
+                            issueSummary: w.issueSummary,
+                            timeSpent: w.timeSpent,
+                            started: w.started
+                          })}
+                          className="p-1 rounded-md text-muted-foreground hover:text-red-600 dark:hover:text-red-400 hover:bg-red-500/10 transition"
+                          title="Xóa log work"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
 
                     <div className="flex items-center justify-between text-[11px] text-muted-foreground pt-1 border-t border-border/50">
@@ -759,6 +971,39 @@ export const JiraLogworkPage: React.FC = () => {
           }}
         />
       )}
+
+      {/* Edit Worklog Modal */}
+      {editingWorklog && (
+        <EditWorklogModal
+          isOpen={Boolean(editingWorklog)}
+          onClose={() => setEditingWorklog(null)}
+          worklog={editingWorklog}
+          onSuccess={handleWorklogMutationSuccess}
+        />
+      )}
+
+      {/* Confirm Delete Worklog Modal */}
+      <ConfirmModal
+        isOpen={!!pendingDeleteWorklog}
+        title="Xác nhận xóa Log Work"
+        description={
+          pendingDeleteWorklog ? (
+            <span>
+              Bạn có chắc chắn muốn xóa lượt log work <strong className="text-foreground">{pendingDeleteWorklog.timeSpent}</strong>
+              {pendingDeleteWorklog.started ? ` (ngày ${new Date(pendingDeleteWorklog.started).toLocaleDateString()})` : ''} trên công việc{' '}
+              <span className="font-semibold text-primary">{pendingDeleteWorklog.issueKey}</span> không? Thao tác này sẽ xóa vĩnh viễn thời gian làm việc đã ghi nhận trên Jira.
+            </span>
+          ) : ''
+        }
+        confirmText="Xác nhận xóa"
+        cancelText="Hủy bỏ"
+        variant="destructive"
+        loading={isDeletingWorklog}
+        onConfirm={executeDeleteWorklog}
+        onClose={() => {
+          if (!isDeletingWorklog) setPendingDeleteWorklog(null);
+        }}
+      />
     </div>
   );
 };

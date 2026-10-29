@@ -36,20 +36,20 @@ export const ModuleScreens: React.FC = () => {
           className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors p-1"
         >
           <ArrowLeft className="w-4 h-4" />
-          <span>Back to All Modules</span>
+          <span>Quay lại tất cả nhóm</span>
         </button>
 
         <div className="flex items-center gap-2">
           <button
             onClick={() => navigate('/docs/screens/new')}
-            className="flex items-center gap-1.5 text-xs font-bold px-3.5 sm:px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90 rounded-xl transition shadow-sm"
+            className="flex items-center gap-1.5 text-xs font-semibold px-3.5 sm:px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90 rounded-xl transition shadow-xs"
           >
             <Plus className="w-4 h-4" />
-            <span>+ Tạo Màn Hình</span>
+            <span>Tạo màn hình</span>
           </button>
           <button
             onClick={() => navigate('/docs/import')}
-            className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 bg-card border border-border text-foreground hover:bg-accent rounded-xl transition shadow-sm"
+            className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 bg-card border border-border text-foreground hover:bg-accent rounded-xl transition shadow-xs"
           >
             <FileText className="w-3.5 h-3.5 text-muted-foreground" />
             <span>Import .md</span>
@@ -58,32 +58,32 @@ export const ModuleScreens: React.FC = () => {
       </div>
 
       <div>
-        <h2 className="text-xl sm:text-2xl font-extrabold tracking-tight text-foreground capitalize">
+        <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-foreground capitalize">
           {moduleSlug?.replace(/-/g, ' ')}
-        </h2>
-        <p className="text-xs sm:text-sm text-muted-foreground mt-1">
-          Showing all screen specifications and feature designs registered under this module.
+        </h1>
+        <p className="text-xs sm:text-sm text-muted-foreground mt-1 leading-relaxed">
+          Danh sách tài liệu đặc tả màn hình và quy chuẩn kỹ thuật thuộc nhóm này.
         </p>
       </div>
 
       {loading ? (
         <div className="p-12 text-center text-sm text-muted-foreground flex flex-col items-center justify-center min-h-[300px]">
           <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin mb-3" />
-          <span>Loading screen documents...</span>
+          <span>Đang tải danh sách tài liệu...</span>
         </div>
       ) : safeScreens.length === 0 ? (
-        <div className="bg-card border border-border rounded-2xl p-8 sm:p-12 text-center space-y-3 shadow-sm">
+        <div className="bg-card border border-border rounded-2xl p-8 sm:p-12 text-center space-y-3 shadow-xs">
           <FileText className="w-10 h-10 mx-auto text-muted-foreground/60" />
-          <h4 className="text-base font-bold text-foreground">No documents yet</h4>
-          <p className="text-xs text-muted-foreground max-w-md mx-auto">
-            No screen handover documents have been imported into this module. You can upload an existing markdown file or use the specification template.
+          <h4 className="text-base font-bold text-foreground">Chưa có tài liệu nào</h4>
+          <p className="text-xs text-muted-foreground max-w-md mx-auto leading-relaxed">
+            Chưa có tài liệu đặc tả nào trong nhóm này. Bạn có thể tạo mới hoặc import từ file Markdown có sẵn.
           </p>
           <button
             onClick={() => navigate('/docs/import')}
-            className="inline-flex items-center gap-1.5 px-4 py-2 bg-primary text-primary-foreground text-xs font-bold rounded-xl mt-3 shadow-sm"
+            className="inline-flex items-center gap-1.5 px-4 py-2 bg-primary text-primary-foreground text-xs font-semibold rounded-xl mt-3 shadow-xs"
           >
             <Plus className="w-4 h-4" />
-            <span>Import your first .md</span>
+            <span>Import file .md đầu tiên</span>
           </button>
         </div>
       ) : (

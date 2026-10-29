@@ -27,7 +27,9 @@ import {
   ArrowLeftRight,
   StickyNote,
   LogIn,
-  User
+  User,
+  Activity,
+  ShieldCheck
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useJiraAuthStore } from '../../stores/jira-auth.store';
@@ -93,7 +95,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const navItems: NavItem[] = [
     { 
       id: 'docs',
-      title: 'Tài Liệu Đặc Tả', 
+      title: 'Tài liệu đặc tả', 
       desc: 'Screen specs & architecture', 
       path: '/docs', 
       icon: FileText,
@@ -101,22 +103,30 @@ export const Sidebar: React.FC<SidebarProps> = ({
       children: [
         {
           id: 'docs-dashboard',
-          title: 'Tổng Quan Màn Hình',
+          title: 'Tổng quan màn hình',
           desc: 'Tất cả màn hình & module',
           path: '/docs',
           icon: LayoutDashboard,
           exact: true
         },
         {
+          id: 'docs-api',
+          title: 'Tài liệu API',
+          desc: 'Endpoints, mẫu & mã lỗi',
+          path: '/docs/api',
+          icon: Code2,
+          badge: 'REST'
+        },
+        {
           id: 'docs-import',
-          title: 'Nhập Đặc Tả (.md)',
+          title: 'Nhập đặc tả (.md)',
           desc: 'Thêm tài liệu từ markdown',
           path: '/docs/import',
           icon: Upload
         },
         {
           id: 'docs-bugs',
-          title: 'Quản Lý Bug (Fix Notes)',
+          title: 'Quản lý Bug',
           desc: 'Theo dõi & log bug FE/BE',
           path: '/docs/bugs',
           icon: Bug,
@@ -126,7 +136,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     },
     { 
       id: 'jira',
-      title: 'Quản Lý Jira', 
+      title: 'Quản lý Jira', 
       desc: 'Sprint tasks & timesheet', 
       path: '/jira', 
       icon: ClipboardCheck,
@@ -150,27 +160,42 @@ export const Sidebar: React.FC<SidebarProps> = ({
         },
         {
           id: 'jira-tasks',
-          title: 'Task Explorer',
+          title: 'Tra cứu công việc',
           desc: 'Tra cứu & tạo công việc',
           path: '/jira/tasks',
           icon: Search
         },
         {
           id: 'jira-logwork',
-          title: 'Log Work / Timesheet',
+          title: 'Chấm công Log Work',
           desc: 'Ghi nhận giờ & ADF',
           path: '/jira/logwork',
           icon: Clock
+        },
+        {
+          id: 'jira-activity-stream',
+          title: 'Activity Stream',
+          desc: 'Toàn bộ nhân sự log time',
+          path: '/jira/activity-stream',
+          icon: Activity
         }
       ]
     },
     {
       id: 'dev-tools',
-      title: 'Công Cụ Mở Rộng',
-      desc: 'Tiện ích chuẩn bị cho tương lai',
+      title: 'Công cụ mở rộng',
+      desc: 'Tiện ích nhà phát triển',
       icon: Wrench,
-      badge: 'Mở rộng',
+      badge: 'Tiện ích',
       children: [
+        {
+          id: 'tool-crypto-identity',
+          title: 'Mã hóa & Định danh',
+          desc: 'Base64, URL, JWT, Hash, GUID, Mật khẩu',
+          path: '/tools/crypto-identity',
+          icon: ShieldCheck,
+          badge: 'Mới'
+        },
         {
           id: 'tool-sticky-notes',
           title: 'Sticky Notes',
@@ -181,7 +206,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         },
         {
           id: 'tool-compare-text',
-          title: 'Compare Text Online',
+          title: 'So sánh văn bản (Diff)',
           desc: 'Diff dòng, từ, ký tự & patch',
           path: '/tools/compare-text',
           icon: ArrowLeftRight,
@@ -189,7 +214,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         },
         {
           id: 'tool-text-formatter',
-          title: 'Text Formatter Online',
+          title: 'Định dạng văn bản',
           desc: 'Nén 1 dòng & Smart JSON',
           path: '/tools/text-formatter',
           icon: AlignLeft,
@@ -202,7 +227,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           path: '/tools/api',
           icon: Terminal,
           disabled: true,
-          badge: 'Soon'
+          badge: 'Sắp ra mắt'
         },
         {
           id: 'tool-db',
@@ -211,7 +236,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           path: '/tools/db',
           icon: Database,
           disabled: true,
-          badge: 'Soon'
+          badge: 'Sắp ra mắt'
         },
         {
           id: 'tool-codegen',
@@ -220,7 +245,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           path: '/tools/codegen',
           icon: Code2,
           disabled: true,
-          badge: 'Soon'
+          badge: 'Sắp ra mắt'
         }
       ]
     }
@@ -318,8 +343,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {/* --- NAVIGATION LIST --- */}
         <div className="flex-1 flex flex-col gap-1 w-full overflow-y-auto overflow-x-hidden scrollbar-thin">
           {!isDesktopCollapsed && (
-            <div className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider px-2 py-1.5 mt-1">
-              Chức Năng Hệ Thống
+            <div className="text-[11px] font-semibold text-muted-foreground px-2 py-1.5 mt-1">
+              Chức năng hệ thống
             </div>
           )}
 
@@ -693,7 +718,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       <aside
         className={clsx(
-          'fixed inset-y-0 left-0 z-50 w-[290px] max-w-[85vw] bg-card border-r border-border flex flex-col p-4 shadow-2xl transition-transform duration-300 ease-in-out md:hidden',
+          'fixed inset-y-0 left-0 z-50 w-[290px] max-w-[85vw] bg-card border-r border-border flex flex-col p-4 pt-[max(1rem,env(safe-area-inset-top,0px))] pb-[max(1rem,env(safe-area-inset-bottom,0px))] pl-[max(1rem,env(safe-area-inset-left,0px))] shadow-2xl transition-transform duration-300 ease-in-out md:hidden',
           isMobileOpen ? 'translate-x-0' : '-translate-x-full'
         )}
       >
@@ -719,8 +744,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         {/* Drawer Navigation List with 2-Level Menus */}
         <div className="flex-1 py-3 space-y-1.5 overflow-y-auto">
-          <div className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider px-2 py-1">
-            Menu Chức Năng
+          <div className="text-[11px] font-semibold text-muted-foreground px-2 py-1">
+            Chức năng hệ thống
           </div>
 
           {navItems.map((item) => {

@@ -30,12 +30,15 @@ import {
   Check,
   Plus,
   Trash2,
-  ChevronDown
+  ChevronDown,
+  Sliders,
+  Maximize2
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
-import { filesApi } from '../../../services/api';
+import { filesApi, resolveApiUrl } from '../../../services/api';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { markdownToHtml, htmlToMarkdown } from '../../../utils/markdownConverter';
+import { ImageResizeModal } from './ImageResizeModal';
 
 interface MarkdownEditorProps {
   value: string;
@@ -44,6 +47,8 @@ interface MarkdownEditorProps {
   isSaving?: boolean;
   minHeight?: string;
   placeholder?: string;
+  onUploadImage?: (file: File) => Promise<string>;
+  onDeleteImage?: (imageSrc: string) => void;
 }
 
 export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
@@ -52,7 +57,9 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
   onSave,
   isSaving = false,
   minHeight = '520px',
-  placeholder = 'Nhập nội dung đặc tả tại đây...'
+  placeholder = 'Nhập nội dung đặc tả tại đây...',
+  onUploadImage,
+  onDeleteImage,
 }) => {
   // Default to 'visual' (WYSIWYG) mode as requested to make it easy for no-tech users
   const [viewMode, setViewMode] = useState<'visual' | 'split' | 'edit' | 'preview'>('visual');
@@ -62,10 +69,34 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
   const [showHeadings, setShowHeadings] = useState(false);
   const [showTableTools, setShowTableTools] = useState(false);
 
+  // Hover and Interactive Resize state for Images in WYSIWYG
+  const [hoveredImage, setHoveredImage] = useState<HTMLImageElement | null>(null);
+  const [hoveredImageRect, setHoveredImageRect] = useState<{
+    top: number;
+    left: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  const [isResizingDrag, setIsResizingDrag] = useState(false);
+  const [dragCurrentWidth, setDragCurrentWidth] = useState<number | null>(null);
+
+  // Configuration Modal state (opened when clicking directly on image or clicking Sliders icon)
+  const [editorModalImage, setEditorModalImage] = useState<{
+    url?: string;
+    alt?: string;
+    file?: File | null;
+    initialWidth?: number;
+    initialHeight?: number;
+    targetElement?: HTMLImageElement | null;
+  } | null>(null);
+
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const visualRef = useRef<HTMLDivElement>(null);
+  const visualContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const isUpdatingFromProps = useRef<boolean>(false);
+  const hoverTimeoutRef = useRef<any>(null);
+  const dragStartInfo = useRef<{ startX: number; startWidth: number; img: HTMLImageElement } | null>(null);
 
   // Sync value to visual editor when switching to visual mode or initial mount
   useEffect(() => {
@@ -88,6 +119,202 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
     const newMarkdown = htmlToMarkdown(html);
     onChange(newMarkdown);
   }, [onChange]);
+
+  // Helper to accurately position floating toolbar over the hovered image
+  const updateImageRect = useCallback((img: HTMLImageElement) => {
+    if (!visualContainerRef.current) return;
+    const containerRect = visualContainerRef.current.getBoundingClientRect();
+    const imgRect = img.getBoundingClientRect();
+    setHoveredImage(img);
+    setHoveredImageRect({
+      top: imgRect.top - containerRect.top + visualContainerRef.current.scrollTop,
+      left: imgRect.left - containerRect.left + visualContainerRef.current.scrollLeft,
+      width: imgRect.width,
+      height: imgRect.height,
+    });
+  }, []);
+
+  // Listen for image deletions inside visual editor (e.g. Backspace, Cut, Delete key)
+  useEffect(() => {
+    if (viewMode !== 'visual' || !visualRef.current) return;
+
+    const observer = new MutationObserver((mutations) => {
+      if (isUpdatingFromProps.current) return;
+
+      mutations.forEach((mutation) => {
+        mutation.removedNodes.forEach((node) => {
+          if (node.nodeName === 'IMG') {
+            const img = node as HTMLImageElement;
+            const src = img.getAttribute('data-doc-src') || img.src;
+            if (src && onDeleteImage) {
+              onDeleteImage(src);
+            }
+          } else if ((node as HTMLElement).querySelectorAll) {
+            const imgs = (node as HTMLElement).querySelectorAll('img');
+            imgs.forEach((img) => {
+              const src = img.getAttribute('data-doc-src') || img.src;
+              if (src && onDeleteImage) {
+                onDeleteImage(src);
+              }
+            });
+          }
+        });
+      });
+    });
+
+    observer.observe(visualRef.current, { childList: true, subtree: true });
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [viewMode, onDeleteImage]);
+
+  // Handle mouse move over images in Visual mode
+  const handleVisualMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (isResizingDrag) return;
+    let target = e.target as HTMLElement | null;
+    if (target && target.tagName === 'IMG') {
+      if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+      updateImageRect(target as HTMLImageElement);
+    }
+  };
+
+  const handleVisualMouseLeave = () => {
+    if (isResizingDrag) return;
+    hoverTimeoutRef.current = setTimeout(() => {
+      setHoveredImage(null);
+      setHoveredImageRect(null);
+    }, 400);
+  };
+
+  // Clicking directly on an image opens the configuration popup modal
+  const handleVisualClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement | null;
+    if (target && target.tagName === 'IMG') {
+      const img = target as HTMLImageElement;
+      e.stopPropagation();
+      e.preventDefault();
+
+      const widthAttr = img.getAttribute('width');
+      const styleW = img.style?.width;
+      const initialW = parseInt(widthAttr || styleW || '') || img.naturalWidth || Math.round(img.offsetWidth);
+      const initialH = img.naturalHeight || Math.round(img.offsetHeight);
+
+      setEditorModalImage({
+        url: img.getAttribute('data-doc-src') || img.src,
+        alt: img.alt || 'Hình ảnh',
+        initialWidth: initialW,
+        initialHeight: initialH,
+        targetElement: img,
+      });
+    }
+  };
+
+  // Apply quick resize preset from hover toolbar (25%, 50%, 75%, 100%, 800px)
+  const handleApplyPresetWidth = (preset: number | '800px') => {
+    if (!hoveredImage) return;
+    const img = hoveredImage;
+    const containerWidth = visualRef.current?.clientWidth || 800;
+    const naturalW = img.naturalWidth || img.offsetWidth;
+
+    let targetPx = 0;
+    if (preset === '800px') {
+      targetPx = Math.min(800, containerWidth);
+    } else {
+      targetPx = Math.round((Math.min(naturalW, containerWidth) * preset) / 100);
+    }
+
+    img.setAttribute('width', `${targetPx}`);
+    img.style.width = `${targetPx}px`;
+    img.style.maxWidth = '100%';
+    handleVisualInput();
+    updateImageRect(img);
+    toast.success(`Đã resize ảnh: ${targetPx}px (${preset})`);
+  };
+
+  // Delete image from hover toolbar
+  const handleDeleteHoveredImage = () => {
+    if (!hoveredImage) return;
+    const img = hoveredImage;
+    const src = img.getAttribute('data-doc-src') || img.src;
+
+    const parent = img.parentElement;
+    img.remove();
+    if (parent && parent.tagName === 'P' && parent.children.length === 0 && !parent.textContent?.trim()) {
+      parent.remove();
+    }
+
+    setHoveredImage(null);
+    setHoveredImageRect(null);
+    handleVisualInput();
+
+    if (onDeleteImage && src) {
+      onDeleteImage(src);
+    }
+    toast.success('Đã xóa ảnh khỏi tài liệu');
+  };
+
+  // Start interactive drag-to-resize handle at bottom-right
+  const handleStartDragResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!hoveredImage) return;
+
+    const img = hoveredImage;
+    dragStartInfo.current = {
+      startX: e.clientX,
+      startWidth: img.offsetWidth,
+      img,
+    };
+    setIsResizingDrag(true);
+    setDragCurrentWidth(Math.round(img.offsetWidth));
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      if (!dragStartInfo.current) return;
+      const { startX, startWidth, img: targetImg } = dragStartInfo.current;
+      const containerW = visualRef.current?.clientWidth || 900;
+      const deltaX = moveEvent.clientX - startX;
+      const newWidth = Math.max(100, Math.min(containerW, startWidth + deltaX));
+
+      targetImg.setAttribute('width', `${Math.round(newWidth)}`);
+      targetImg.style.width = `${Math.round(newWidth)}px`;
+      targetImg.style.maxWidth = '100%';
+      setDragCurrentWidth(Math.round(newWidth));
+      updateImageRect(targetImg);
+    };
+
+    const onMouseUp = () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      setIsResizingDrag(false);
+      setDragCurrentWidth(null);
+      dragStartInfo.current = null;
+      handleVisualInput();
+    };
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  };
+
+  // Called when image is configured in modal
+  const handleConfirmModalResize = (
+    processedFile: File,
+    previewUrl: string,
+    metadata: { width: number; height: number; sizeBytes: number }
+  ) => {
+    if (editorModalImage?.targetElement) {
+      const img = editorModalImage.targetElement;
+      img.setAttribute('width', `${metadata.width}`);
+      img.style.width = `${metadata.width}px`;
+      img.style.maxWidth = '100%';
+      if (previewUrl && previewUrl.startsWith('blob:')) {
+        img.src = previewUrl;
+      }
+      handleVisualInput();
+      updateImageRect(img);
+    }
+    setEditorModalImage(null);
+  };
 
   // Switch View Mode with clean state synchronization
   const handleSwitchMode = (mode: 'visual' | 'split' | 'edit' | 'preview') => {
@@ -295,27 +522,37 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
     }
 
     setIsUploading(true);
-    const toastId = toast.loading(`Đang tải ảnh "${file.name}" lên máy chủ...`);
 
     try {
-      const formData = new FormData();
-      formData.append('image', file);
+      let imageUrl = '';
+      if (onUploadImage) {
+        imageUrl = await onUploadImage(file);
+      } else {
+        const toastId = toast.loading(`Đang tải ảnh "${file.name}" lên máy chủ...`);
+        try {
+          const formData = new FormData();
+          formData.append('image', file);
+          const res = await filesApi.uploadImage(formData);
+          imageUrl = res.data.url;
+          toast.success('Tải ảnh thành công và đã chèn vào tài liệu!', { id: toastId });
+        } catch (err: any) {
+          toast.error(err.response?.data?.error || 'Tải ảnh thất bại', { id: toastId });
+          throw err;
+        }
+      }
 
-      const res = await filesApi.uploadImage(formData);
-      const imageUrl = res.data.url;
       const cleanName = file.name.replace(/\.[^/.]+$/, '');
 
       if (viewMode === 'visual') {
-        const imgHtml = `<p><img src="${imageUrl}" alt="${cleanName}" class="max-w-full rounded-xl my-3 border border-border shadow-xs inline-block" /></p><p><br></p>`;
+        const resolvedUrl = resolveApiUrl(imageUrl);
+        const imgHtml = `<p><img src="${resolvedUrl}" data-doc-src="${imageUrl}" alt="${cleanName}" class="max-w-full rounded-xl my-3 border border-border shadow-xs inline-block cursor-pointer hover:ring-2 hover:ring-primary/40 transition-all" /></p><p><br></p>`;
         execVisualCommand('insertHTML', imgHtml);
       } else {
         const markdownTag = `![${cleanName}](${imageUrl})`;
         insertBlock(markdownTag);
       }
-
-      toast.success('Tải ảnh thành công và đã chèn vào tài liệu!', { id: toastId });
-    } catch (err: any) {
-      toast.error(err.response?.data?.error || 'Tải ảnh thất bại', { id: toastId });
+    } catch (err) {
+      console.error(err);
     } finally {
       setIsUploading(false);
     }
@@ -835,7 +1072,13 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
       >
         {/* 1. VISUAL WYSIWYG EDITOR PANE (Default mode for no-tech users) */}
         {viewMode === 'visual' && (
-          <div className="flex-1 flex flex-col bg-background relative">
+          <div 
+            ref={visualContainerRef}
+            onScroll={() => {
+              if (hoveredImage) updateImageRect(hoveredImage);
+            }}
+            className="flex-1 flex flex-col bg-background relative overflow-y-auto"
+          >
             <div
               ref={visualRef}
               contentEditable
@@ -844,15 +1087,123 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
               onDrop={handleDrop}
               onPaste={handlePaste}
               onKeyDown={handleKeyDown}
+              onMouseMove={handleVisualMouseMove}
+              onMouseLeave={handleVisualMouseLeave}
+              onClick={handleVisualClick}
               className="w-full flex-1 p-5 sm:p-7 outline-none overflow-y-auto leading-relaxed text-foreground font-sans prose prose-slate dark:prose-invert max-w-none scrollbar-thin select-text min-h-[480px]"
               style={{ minHeight }}
             />
+
+            {/* Floating Overlay for Hovered/Resizing Image */}
+            {hoveredImageRect && hoveredImage && (
+              <div 
+                className="absolute pointer-events-none z-30 transition-all duration-75"
+                style={{
+                  top: hoveredImageRect.top,
+                  left: hoveredImageRect.left,
+                  width: hoveredImageRect.width,
+                  height: hoveredImageRect.height,
+                }}
+                onMouseEnter={() => {
+                  if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+                }}
+                onMouseLeave={handleVisualMouseLeave}
+              >
+                {/* Border outline on image */}
+                <div className="absolute inset-0 border-2 border-primary/70 rounded-xl pointer-events-none ring-2 ring-primary/20" />
+
+                {/* Top Action & Resize Toolbar */}
+                <div 
+                  className="absolute left-0 -top-11 flex items-center gap-1 bg-neutral-900/95 text-white border border-neutral-700/90 rounded-xl shadow-xl px-2 py-1 pointer-events-auto backdrop-blur-md animate-in fade-in zoom-in-95 select-none"
+                  onMouseEnter={() => {
+                    if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+                  }}
+                >
+                  <span className="text-[10px] text-neutral-400 font-bold uppercase tracking-wider px-1">
+                    Resize:
+                  </span>
+                  {[
+                    { label: '25%', val: 25 },
+                    { label: '50%', val: 50 },
+                    { label: '75%', val: 75 },
+                    { label: '100%', val: 100 },
+                  ].map((preset) => (
+                    <button
+                      key={preset.val}
+                      type="button"
+                      onClick={() => handleApplyPresetWidth(preset.val)}
+                      className="px-1.5 py-0.5 rounded text-[11px] font-semibold bg-neutral-800 hover:bg-primary hover:text-white transition"
+                      title={`Đặt kích thước ${preset.label}`}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => handleApplyPresetWidth('800px')}
+                    className="px-1.5 py-0.5 rounded text-[11px] font-semibold bg-neutral-800 hover:bg-primary hover:text-white transition"
+                    title="Đặt chiều rộng chuẩn 800px"
+                  >
+                    800px
+                  </button>
+
+                  <span className="w-px h-4 bg-neutral-700 mx-1" />
+
+                  {/* Sliders / Configuration button */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const initialW = parseInt(hoveredImage.getAttribute('width') || hoveredImage.style.width || '') || hoveredImage.naturalWidth || Math.round(hoveredImage.offsetWidth);
+                      const initialH = hoveredImage.naturalHeight || Math.round(hoveredImage.offsetHeight);
+                      setEditorModalImage({
+                        url: hoveredImage.getAttribute('data-doc-src') || hoveredImage.src,
+                        alt: hoveredImage.alt || 'Hình ảnh',
+                        initialWidth: initialW,
+                        initialHeight: initialH,
+                        targetElement: hoveredImage,
+                      });
+                    }}
+                    className="p-1 rounded hover:bg-neutral-800 text-neutral-300 hover:text-white transition flex items-center gap-1 text-[11px]"
+                    title="Cấu hình chi tiết (Xoay, lật, nén chất lượng, kích thước px)"
+                  >
+                    <Sliders className="w-3.5 h-3.5 text-blue-400" />
+                    <span className="hidden sm:inline">Cấu hình</span>
+                  </button>
+
+                  {/* Delete image button */}
+                  <button
+                    type="button"
+                    onClick={handleDeleteHoveredImage}
+                    className="p-1 rounded hover:bg-red-500/20 text-neutral-300 hover:text-red-400 transition"
+                    title="Xóa ảnh này khỏi tài liệu và máy chủ"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                  </button>
+                </div>
+
+                {/* Bottom-right Drag handle to resize interactively */}
+                <div
+                  onMouseDown={handleStartDragResize}
+                  className="absolute -right-2 -bottom-2 w-5 h-5 bg-primary border-2 border-white rounded-full shadow-lg cursor-se-resize flex items-center justify-center hover:scale-125 transition-transform pointer-events-auto select-none"
+                  title="Nhấn và kéo chuột để thay đổi kích thước ảnh trực tiếp"
+                >
+                  <div className="w-1.5 h-1.5 bg-white rounded-full" />
+                </div>
+
+                {/* Current width badge while dragging */}
+                {dragCurrentWidth && (
+                  <div className="absolute right-0 -bottom-8 bg-black/80 backdrop-blur-md text-white text-[10px] font-mono font-bold px-2 py-0.5 rounded-md pointer-events-none shadow">
+                    {dragCurrentWidth}px
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Bottom Status bar for Visual mode */}
             <div className="py-1 px-4 border-t border-border/50 bg-muted/20 text-[11px] text-muted-foreground flex items-center justify-between">
               <span className="flex items-center gap-1.5">
                 <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
-                <span>Chế độ Soạn thảo Trực quan (WYSIWYG) • Định dạng và kẻ bảng tự nhiên • Tự động chuyển đổi sang Markdown chuẩn</span>
+                <span>Chế độ Soạn thảo Trực quan (WYSIWYG) • Rê chuột vào ảnh để chỉnh kích thước nhanh hoặc bấm vào ảnh để cấu hình chi tiết</span>
               </span>
               <span className="font-mono shrink-0 ml-2">
                 {value.length} ký tự
@@ -907,6 +1258,20 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
           </div>
         )}
       </div>
+
+      {/* Image Customization / Resize Modal (Opened when clicking on image or clicking Sliders icon) */}
+      {editorModalImage && (
+        <ImageResizeModal
+          isOpen={Boolean(editorModalImage)}
+          file={editorModalImage.file || null}
+          imageUrl={editorModalImage.url}
+          imageAlt={editorModalImage.alt}
+          initialWidth={editorModalImage.initialWidth}
+          initialHeight={editorModalImage.initialHeight}
+          onClose={() => setEditorModalImage(null)}
+          onConfirm={handleConfirmModalResize}
+        />
+      )}
     </div>
   );
 };

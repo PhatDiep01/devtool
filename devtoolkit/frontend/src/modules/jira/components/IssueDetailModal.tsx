@@ -32,17 +32,22 @@ import {
   File as FileIcon,
   ZoomIn,
   Maximize2,
-  Minimize2
+  Minimize2,
+  Trash2,
+  Edit3
 } from 'lucide-react';
 import { jiraApi, resolveApiUrl, getJiraProxyImageUrl } from '../../../services/api';
 import { useJiraAuthStore } from '../../../stores/jira-auth.store';
 import { JiraIssue } from '../../../types';
 import { LogWorkModal } from './LogWorkModal';
+import { EditWorklogModal, EditableWorklog } from './EditWorklogModal';
 import { CreateIssueModal } from './CreateIssueModal';
 import { IssueTypeIcon } from './IssueTypeIcon';
+import { EditStoryModal } from './EditStoryModal';
 import { JiraAvatar } from './JiraAvatar';
 import { formatRelativeTime } from '../../../utils/dateUtils';
 import { toast } from 'react-hot-toast';
+import { ConfirmModal } from '../../../components/ui';
 
 interface IssueDetailModalProps {
   isOpen: boolean;
@@ -165,6 +170,36 @@ function formatFileSize(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
+// Format subtask logwork time (e.g. 2.5h, 45m, 1d)
+function formatSubtaskLoggedTime(fields: any): { text: string; hasTime: boolean } {
+  if (!fields) return { text: '0h', hasTime: false };
+
+  // 1. Check formatted string from timetracking.timeSpent
+  if (fields.timetracking?.timeSpent && typeof fields.timetracking.timeSpent === 'string') {
+    const raw = fields.timetracking.timeSpent.trim();
+    if (raw && raw !== '0h' && raw !== '0m') {
+      return { text: raw, hasTime: true };
+    }
+  }
+
+  // 2. Check numeric seconds from timespent or timetracking.timeSpentSeconds
+  const seconds = fields.timespent ?? fields.timetracking?.timeSpentSeconds;
+  if (typeof seconds === 'number' && seconds > 0) {
+    const hours = seconds / 3600;
+    if (hours >= 8 && hours % 8 === 0) {
+      return { text: `${hours / 8}d`, hasTime: true };
+    }
+    if (hours >= 1) {
+      const rounded = Math.round(hours * 10) / 10;
+      return { text: `${rounded}h`, hasTime: true };
+    }
+    const mins = Math.round(seconds / 60);
+    return { text: `${mins}m`, hasTime: true };
+  }
+
+  return { text: '0h', hasTime: false };
+}
+
 // Clean text snippet for collapsed comment preview
 function getCommentSnippet(body: any): string {
   if (!body) return 'Không có nội dung';
@@ -199,9 +234,19 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
   const [transitioning, setTransitioning] = useState(false);
   const [activeTab, setActiveTab] = useState<'details' | 'comments' | 'worklogs'>('details');
 
-  // Transitions custom dropdown
+  // Transitions custom dropdown & Confirmation state
   const [showTransitionMenu, setShowTransitionMenu] = useState(false);
   const transitionRef = useRef<HTMLDivElement>(null);
+  const [pendingTransition, setPendingTransition] = useState<{
+    key: string;
+    id: string;
+    name: string;
+    summary?: string;
+    isSubtask?: boolean;
+  } | null>(null);
+  const [openSubtaskMenuKey, setOpenSubtaskMenuKey] = useState<string | null>(null);
+  const [subtaskTransitionsMap, setSubtaskTransitionsMap] = useState<Record<string, any[]>>({});
+  const [loadingSubtaskTransitions, setLoadingSubtaskTransitions] = useState<string | null>(null);
 
   // Subtasks collapse toggle
   const [isSubtasksCollapsed, setIsSubtasksCollapsed] = useState(false);
@@ -219,25 +264,79 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
   // Sub-modals
   const [showLogWork, setShowLogWork] = useState(false);
   const [showCreateSubtask, setShowCreateSubtask] = useState(false);
+  const [editingWorklog, setEditingWorklog] = useState<EditableWorklog | null>(null);
+  const [pendingDeleteWorklog, setPendingDeleteWorklog] = useState<{
+    id: string;
+    timeSpent: string;
+    started?: string;
+    author?: string;
+  } | null>(null);
+  const [isDeletingWorklog, setIsDeletingWorklog] = useState(false);
+  const [showEditStoryModal, setShowEditStoryModal] = useState(false);
+  const [showDeleteStoryConfirm, setShowDeleteStoryConfirm] = useState(false);
+  const [isDeletingCurrentIssue, setIsDeletingCurrentIssue] = useState(false);
+
+  const executeDeleteCurrentIssue = async () => {
+    setIsDeletingCurrentIssue(true);
+    try {
+      await jiraApi.deleteIssue(currentKey, { deleteSubtasks: true });
+      toast.success(`Đã xóa ${currentKey} thành công!`);
+      setShowDeleteStoryConfirm(false);
+      onClose();
+      onIssueUpdated?.();
+    } catch (err: any) {
+      console.error(err);
+      const msg = err.response?.data?.message || err.response?.data?.error || err.message || 'Xóa thất bại';
+      toast.error(`Xóa thất bại: ${typeof msg === 'string' ? msg : JSON.stringify(msg)}`);
+    } finally {
+      setIsDeletingCurrentIssue(false);
+    }
+  };
 
   // Comments sort order & expanded state
   const [commentSortOrder, setCommentSortOrder] = useState<'desc' | 'asc'>('desc');
   const [expandedCommentIds, setExpandedCommentIds] = useState<Set<string>>(new Set());
 
-  // Close transition menu on click outside
+  // Close transition menu & subtask menu on click outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (transitionRef.current && !transitionRef.current.contains(event.target as Node)) {
         setShowTransitionMenu(false);
       }
+      if (openSubtaskMenuKey) {
+        const target = event.target as HTMLElement;
+        if (!target.closest('.subtask-status-container')) {
+          setOpenSubtaskMenuKey(null);
+        }
+      }
     };
-    if (showTransitionMenu) {
+    if (showTransitionMenu || openSubtaskMenuKey) {
       document.addEventListener('mousedown', handleClickOutside);
     }
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [showTransitionMenu]);
+  }, [showTransitionMenu, openSubtaskMenuKey]);
+
+  const handleOpenSubtaskTransitions = async (e: React.MouseEvent, subtaskKey: string) => {
+    e.stopPropagation();
+    if (openSubtaskMenuKey === subtaskKey) {
+      setOpenSubtaskMenuKey(null);
+      return;
+    }
+    setOpenSubtaskMenuKey(subtaskKey);
+    if (!subtaskTransitionsMap[subtaskKey]) {
+      setLoadingSubtaskTransitions(subtaskKey);
+      try {
+        const res = await jiraApi.getTransitions(subtaskKey);
+        setSubtaskTransitionsMap(prev => ({ ...prev, [subtaskKey]: res.data || [] }));
+      } catch (err) {
+        toast.error(`Không thể lấy danh sách trạng thái của ${subtaskKey}`);
+      } finally {
+        setLoadingSubtaskTransitions(null);
+      }
+    }
+  };
 
   useEffect(() => {
     if (isOpen && initialKey) {
@@ -254,8 +353,56 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
         jiraApi.getIssue(key),
         jiraApi.getTransitions(key).catch(() => ({ data: [] }))
       ]);
-      setIssue(issueRes.data);
+      const issueData = issueRes.data;
+      setIssue(issueData);
       setTransitions(transRes.data || []);
+
+      // Client-side auto-enrich subtasks with assignee and timetracking if missing
+      const rawSubtasks = issueData?.fields?.subtasks || [];
+      const needsEnrich = rawSubtasks.length > 0 && rawSubtasks.some(
+        (st: any) => !st.fields?.assignee || st.fields?.timetracking === undefined
+      );
+      if (needsEnrich) {
+        jiraApi.search({ jql: `parent = ${key}`, maxResults: 150 }).then((subRes) => {
+          const fetchedIssues: any[] = subRes.data?.issues || (Array.isArray(subRes.data) ? subRes.data : []);
+          if (fetchedIssues.length > 0) {
+            const map = new Map<string, any>();
+            fetchedIssues.forEach((fi) => {
+              if (fi.key) {
+                map.set(fi.key, {
+                  assignee: fi.fields?.assignee || null,
+                  timetracking: fi.fields?.timetracking || null,
+                  timespent: fi.fields?.timespent || null
+                });
+              }
+            });
+            setIssue((prev: any) => {
+              if (!prev || prev.key !== key || !prev.fields?.subtasks) return prev;
+              const enriched = prev.fields.subtasks.map((st: any) => {
+                const info = map.get(st.key);
+                return {
+                  ...st,
+                  fields: {
+                    ...st.fields,
+                    assignee: info?.assignee !== undefined ? info.assignee : (st.fields?.assignee || null),
+                    timetracking: info?.timetracking || st.fields?.timetracking || null,
+                    timespent: info?.timespent !== undefined ? info.timespent : (st.fields?.timespent || null)
+                  }
+                };
+              });
+              return {
+                ...prev,
+                fields: {
+                  ...prev.fields,
+                  subtasks: enriched
+                }
+              };
+            });
+          }
+        }).catch((err) => {
+          console.warn('Could not auto-enrich subtasks with assignee and logwork:', err);
+        });
+      }
     } catch (err: any) {
       toast.error(`Không thể tải thông tin công việc ${key}`);
     } finally {
@@ -263,17 +410,34 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
     }
   };
 
-  const handleTransition = async (transitionId: string, transitionName: string) => {
+  const executeTransition = async (targetKey: string, transitionId: string, transitionName: string) => {
     setTransitioning(true);
     try {
-      await jiraApi.transitionIssue(currentKey, transitionId);
-      toast.success(`Đã chuyển trạng thái ${currentKey} sang "${transitionName}"`);
+      await jiraApi.transitionIssue(targetKey, transitionId);
+      toast.success(`Đã chuyển trạng thái ${targetKey} sang "${transitionName}"`);
       await loadIssue(currentKey);
       onIssueUpdated?.();
     } catch (err: any) {
       toast.error(`Chuyển trạng thái thất bại: ${err.message || 'Lỗi không xác định'}`);
     } finally {
       setTransitioning(false);
+      setPendingTransition(null);
+    }
+  };
+
+  const executeDeleteWorklog = async () => {
+    if (!pendingDeleteWorklog) return;
+    setIsDeletingWorklog(true);
+    try {
+      await jiraApi.deleteWorklog(currentKey, pendingDeleteWorklog.id);
+      toast.success(`Đã xóa lượt log work (${pendingDeleteWorklog.timeSpent}) thành công!`);
+      await loadIssue(currentKey);
+      onIssueUpdated?.();
+    } catch (err: any) {
+      toast.error(`Xóa log work thất bại: ${err.response?.data?.message || err.message}`);
+    } finally {
+      setIsDeletingWorklog(false);
+      setPendingDeleteWorklog(null);
     }
   };
 
@@ -510,7 +674,13 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
                             disabled={transitioning}
                             onClick={() => {
                               setShowTransitionMenu(false);
-                              handleTransition(t.id, t.name);
+                              setPendingTransition({
+                                key: currentKey,
+                                id: t.id,
+                                name: t.name,
+                                summary: issue?.fields?.summary,
+                                isSubtask: Boolean(issue?.fields?.issuetype?.subtask)
+                              });
                             }}
                             className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold hover:bg-accent text-foreground hover:text-primary transition flex items-center justify-between group"
                           >
@@ -525,6 +695,30 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
                     </div>
                   )}
                 </div>
+              )}
+
+              {/* Edit Issue Button */}
+              {issue && (
+                <button
+                  type="button"
+                  onClick={() => setShowEditStoryModal(true)}
+                  className="p-2 rounded-xl text-muted-foreground hover:text-foreground hover:bg-accent transition"
+                  title="Chỉnh sửa thông tin"
+                >
+                  <Edit3 className="w-5 h-5" />
+                </button>
+              )}
+
+              {/* Delete Issue Button */}
+              {issue && (
+                <button
+                  type="button"
+                  onClick={() => setShowDeleteStoryConfirm(true)}
+                  className="p-2 rounded-xl text-muted-foreground hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition"
+                  title="Xóa Story / Issue này"
+                >
+                  <Trash2 className="w-5 h-5" />
+                </button>
               )}
 
               {/* Zoom / Fullscreen Button */}
@@ -829,14 +1023,109 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
                                         {st.fields.summary}
                                       </span>
                                     </div>
-                                    <div className="flex items-center gap-2 shrink-0">
-                                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${
-                                        st.fields.status?.statusCategory?.key === 'done'
-                                          ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
-                                          : 'bg-muted text-muted-foreground'
-                                      }`}>
-                                        {st.fields.status?.name}
-                                      </span>
+                                    <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
+                                      {/* Assignee Avatar & Name */}
+                                      {st.fields.assignee ? (
+                                        <div 
+                                          className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-accent/70 border border-border/70 text-foreground font-medium text-[11px]"
+                                          title={`Người thực hiện: ${st.fields.assignee.displayName}`}
+                                        >
+                                          <JiraAvatar 
+                                            avatarUrl={st.fields.assignee.avatarUrls?.['24x24'] || st.fields.assignee.avatarUrls?.['32x32'] || (st.fields.assignee as any).avatarUrl}
+                                            displayName={st.fields.assignee.displayName}
+                                            className="w-4 h-4"
+                                            sizeText="text-[8px]"
+                                          />
+                                          <span className="truncate max-w-[120px] hidden sm:inline">
+                                            {st.fields.assignee.displayName}
+                                          </span>
+                                        </div>
+                                      ) : (
+                                        <span 
+                                          className="text-[11px] text-muted-foreground/60 italic px-1 hidden sm:inline"
+                                          title="Chưa gán người thực hiện"
+                                        >
+                                          Chưa gán
+                                        </span>
+                                      )}
+
+                                      {/* Logwork Time Spent (Right next to status) */}
+                                      {(() => {
+                                        const logInfo = formatSubtaskLoggedTime(st.fields);
+                                        return (
+                                          <span
+                                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] sm:text-[11px] font-mono tabular-nums transition shrink-0 ${
+                                              logInfo.hasTime
+                                                ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/25 font-semibold'
+                                                : 'text-muted-foreground/50 border border-border/40 bg-muted/20 font-normal'
+                                            }`}
+                                            title={logInfo.hasTime ? `Thời gian đã log: ${logInfo.text}` : 'Chưa có thời gian logwork'}
+                                          >
+                                            <Clock className={`w-3 h-3 shrink-0 ${logInfo.hasTime ? 'text-blue-500 dark:text-blue-400' : 'text-muted-foreground/40'}`} />
+                                            <span>{logInfo.text}</span>
+                                          </span>
+                                        );
+                                      })()}
+
+                                      {/* Status badge with interactive transition dropdown */}
+                                      <div className="relative shrink-0 subtask-status-container">
+                                        <button
+                                          type="button"
+                                          onClick={(e) => handleOpenSubtaskTransitions(e, st.key)}
+                                          className={`text-[10px] px-2 py-0.5 rounded-full font-semibold inline-flex items-center gap-1 transition border hover:brightness-105 active:scale-95 cursor-pointer ${
+                                            st.fields.status?.statusCategory?.key === 'done'
+                                              ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/25'
+                                              : 'bg-muted text-muted-foreground border-border/60 hover:bg-accent hover:text-foreground'
+                                          }`}
+                                          title="Bấm để đổi trạng thái sub-task"
+                                        >
+                                          <span>{st.fields.status?.name}</span>
+                                          <ChevronDown className={`w-2.5 h-2.5 transition-transform duration-150 ${openSubtaskMenuKey === st.key ? 'rotate-180' : ''}`} />
+                                        </button>
+
+                                        {openSubtaskMenuKey === st.key && (
+                                          <div 
+                                            className="absolute right-0 top-full mt-1 w-44 bg-popover/95 backdrop-blur-md border border-border/80 rounded-xl shadow-xl z-50 p-1 animate-in fade-in zoom-in-95 duration-100"
+                                            onClick={(e) => e.stopPropagation()}
+                                          >
+                                            <div className="px-2 py-1 text-[10px] font-bold text-muted-foreground uppercase tracking-wider border-b border-border/50 mb-1 flex items-center justify-between">
+                                              <span>Chuyển trạng thái</span>
+                                              <span className="font-mono text-[9px] text-muted-foreground">{st.key}</span>
+                                            </div>
+                                            {loadingSubtaskTransitions === st.key ? (
+                                              <div className="px-3 py-2 text-xs text-muted-foreground flex items-center justify-center gap-2">
+                                                <RefreshCw className="w-3 h-3 animate-spin text-primary" />
+                                                <span>Đang tải...</span>
+                                              </div>
+                                            ) : (subtaskTransitionsMap[st.key] || []).length === 0 ? (
+                                              <div className="px-3 py-2 text-xs text-muted-foreground italic text-center">
+                                                Không có bước chuyển
+                                              </div>
+                                            ) : (
+                                              (subtaskTransitionsMap[st.key] || []).map((t: any) => (
+                                                <button
+                                                  key={t.id}
+                                                  type="button"
+                                                  onClick={() => {
+                                                    setPendingTransition({
+                                                      key: st.key,
+                                                      id: t.id,
+                                                      name: t.name,
+                                                      summary: st.fields.summary,
+                                                      isSubtask: true
+                                                    });
+                                                    setOpenSubtaskMenuKey(null);
+                                                  }}
+                                                  className="w-full text-left px-2 py-1.5 rounded-lg text-xs font-medium hover:bg-accent hover:text-primary text-foreground flex items-center justify-between transition group cursor-pointer"
+                                                >
+                                                  <span>{t.name}</span>
+                                                  <ArrowRight className="w-3 h-3 opacity-0 group-hover:opacity-100 text-primary transition shrink-0" />
+                                                </button>
+                                              ))
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>
                                     </div>
                                   </div>
                                 ))}
@@ -1345,25 +1634,57 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
                         </p>
                       ) : (
                         worklogsList.map((w) => (
-                          <div key={w.id} className="p-3.5 rounded-2xl bg-card border border-border flex items-start justify-between gap-3 text-xs">
-                            <div className="space-y-1">
+                          <div key={w.id} className="p-3.5 rounded-2xl bg-card border border-border flex items-start justify-between gap-3 text-xs group hover:border-primary/40 transition">
+                            <div className="space-y-1 min-w-0 flex-1">
                               <div className="flex items-center gap-2">
                                 <span className="font-bold text-foreground">
                                   {w.author?.displayName || 'User'}
                                 </span>
                                 <span className="text-[11px] text-muted-foreground">
-                                  logged on {new Date(w.started).toLocaleDateString()}
+                                  logged on {new Date(w.started).toLocaleString()}
                                 </span>
                               </div>
                               {w.comment && (
-                                <p className="text-muted-foreground whitespace-pre-wrap">
+                                <p className="text-muted-foreground whitespace-pre-wrap leading-relaxed">
                                   {renderAdfToText(w.comment)}
                                 </p>
                               )}
                             </div>
-                            <span className="px-2.5 py-1 rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400 font-mono font-bold text-xs shrink-0">
-                              {w.timeSpent}
-                            </span>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="px-2.5 py-1 rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400 font-mono font-bold text-xs shrink-0">
+                                {w.timeSpent}
+                              </span>
+                              <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100 transition">
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingWorklog({
+                                    id: w.id,
+                                    issueKey: currentKey,
+                                    issueSummary: issue?.fields?.summary,
+                                    timeSpent: w.timeSpent,
+                                    started: w.started,
+                                    comment: w.comment
+                                  })}
+                                  className="p-1.5 rounded-lg text-muted-foreground hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-500/10 transition"
+                                  title="Chỉnh sửa log work"
+                                >
+                                  <Edit3 className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setPendingDeleteWorklog({
+                                    id: w.id,
+                                    timeSpent: w.timeSpent,
+                                    started: w.started,
+                                    author: w.author?.displayName
+                                  })}
+                                  className="p-1.5 rounded-lg text-muted-foreground hover:text-red-600 dark:hover:text-red-400 hover:bg-red-500/10 transition"
+                                  title="Xóa log work"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
                           </div>
                         ))
                       )}
@@ -1458,6 +1779,107 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
           </div>
         </div>
       )}
+      {/* Confirm Status Transition Modal */}
+      <ConfirmModal
+        isOpen={!!pendingTransition}
+        title={pendingTransition?.isSubtask ? "Xác nhận chuyển trạng thái Sub-task" : "Xác nhận chuyển trạng thái"}
+        description={
+          pendingTransition ? (
+            <span>
+              Bạn có chắc chắn muốn chuyển trạng thái của{' '}
+              <strong className="text-foreground">{pendingTransition.key}</strong>
+              {pendingTransition.summary ? ` (${pendingTransition.summary})` : ''} sang{' '}
+              <span className="font-semibold text-primary">"{pendingTransition.name}"</span> không?
+            </span>
+          ) : ''
+        }
+        confirmText="Xác nhận chuyển"
+        cancelText="Hủy bỏ"
+        variant="primary"
+        loading={transitioning}
+        onConfirm={() => {
+          if (pendingTransition) {
+            executeTransition(pendingTransition.key, pendingTransition.id, pendingTransition.name);
+          }
+        }}
+        onClose={() => {
+          if (!transitioning) setPendingTransition(null);
+        }}
+      />
+
+      {/* Edit Worklog Modal */}
+      {editingWorklog && (
+        <EditWorklogModal
+          isOpen={Boolean(editingWorklog)}
+          onClose={() => setEditingWorklog(null)}
+          worklog={editingWorklog}
+          onSuccess={() => {
+            loadIssue(currentKey);
+            onIssueUpdated?.();
+          }}
+        />
+      )}
+
+      {/* Confirm Delete Worklog Modal */}
+      <ConfirmModal
+        isOpen={!!pendingDeleteWorklog}
+        title="Xác nhận xóa Log Work"
+        description={
+          pendingDeleteWorklog ? (
+            <span>
+              Bạn có chắc chắn muốn xóa lượt log work <strong className="text-foreground">{pendingDeleteWorklog.timeSpent}</strong>
+              {pendingDeleteWorklog.started ? ` (ngày ${new Date(pendingDeleteWorklog.started).toLocaleDateString()})` : ''} của{' '}
+              <span className="font-semibold text-foreground">{pendingDeleteWorklog.author || 'người dùng'}</span> trên công việc{' '}
+              <span className="font-semibold text-primary">{currentKey}</span> không? Thao tác này sẽ xóa vĩnh viễn thời gian làm việc đã ghi nhận trên Jira.
+            </span>
+          ) : ''
+        }
+        confirmText="Xác nhận xóa"
+        cancelText="Hủy bỏ"
+        variant="destructive"
+        loading={isDeletingWorklog}
+        onConfirm={executeDeleteWorklog}
+        onClose={() => {
+          if (!isDeletingWorklog) setPendingDeleteWorklog(null);
+        }}
+      />
+
+      {/* Edit Story / Issue Modal */}
+      {showEditStoryModal && issue && (
+        <EditStoryModal
+          isOpen={showEditStoryModal}
+          onClose={() => setShowEditStoryModal(false)}
+          story={issue}
+          onSuccess={() => {
+            loadIssue(currentKey);
+            onIssueUpdated?.();
+          }}
+        />
+      )}
+
+      {/* Confirm Delete Issue Modal */}
+      <ConfirmModal
+        isOpen={showDeleteStoryConfirm}
+        title={`Xác nhận xóa ${issue?.fields?.issuetype?.name || 'Issue'} ${currentKey}`}
+        description={
+          <span>
+            Bạn có chắc chắn muốn xóa vĩnh viễn <strong className="text-foreground">{currentKey}</strong>: "{issue?.fields?.summary}"?
+            {issue?.fields?.subtasks && issue.fields.subtasks.length > 0 && (
+              <span className="block mt-2 text-rose-500 font-medium">
+                Cảnh báo: Tất cả {issue.fields.subtasks.length} subtask liên quan cũng sẽ bị xóa vĩnh viễn khỏi Jira!
+              </span>
+            )}
+          </span>
+        }
+        confirmText="Xác nhận xóa"
+        cancelText="Hủy bỏ"
+        variant="destructive"
+        loading={isDeletingCurrentIssue}
+        onConfirm={executeDeleteCurrentIssue}
+        onClose={() => {
+          if (!isDeletingCurrentIssue) setShowDeleteStoryConfirm(false);
+        }}
+      />
     </>,
     document.body
   ) : null;

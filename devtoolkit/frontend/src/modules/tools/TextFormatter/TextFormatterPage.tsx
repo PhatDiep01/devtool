@@ -33,7 +33,6 @@ import {
   FormatterOptions,
   DetectedType
 } from './formatter-engine';
-import { AgentPromptsModal } from './AgentPromptsModal';
 
 const SEPARATOR_OPTIONS = [
   { id: 'space', label: 'Khoảng trắng (" ")', value: ' ' },
@@ -49,7 +48,6 @@ export const TextFormatterPage: React.FC = () => {
   const [inputText, setInputText] = useState<string>('');
   const [outputText, setOutputText] = useState<string>('');
   const [isCopied, setIsCopied] = useState<boolean>(false);
-  const [isAgentsModalOpen, setIsAgentsModalOpen] = useState<boolean>(false);
   
   // Format options
   const [smartJson, setSmartJson] = useState<boolean>(true);
@@ -278,40 +276,29 @@ export const TextFormatterPage: React.FC = () => {
       {/* ========================================================================= */}
       <div className="border-b border-border bg-card/60 backdrop-blur px-4 sm:px-6 py-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4 sticky top-0 z-20">
         <div className="flex items-center gap-3 min-w-0">
-          <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-primary to-blue-600 flex items-center justify-center text-primary-foreground shadow-md shadow-primary/20 shrink-0">
+          <div className="w-10 h-10 rounded-2xl bg-primary flex items-center justify-center text-primary-foreground shadow-xs shrink-0">
             <AlignLeft className="w-5 h-5 font-bold" />
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="text-lg sm:text-xl font-extrabold text-foreground tracking-tight">
-                Text Formatter Online
+              <h1 className="text-lg sm:text-xl font-bold text-foreground tracking-tight">
+                Định dạng văn bản
               </h1>
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-primary/10 border border-primary/20 text-primary font-bold">
-                OneLine Studio
+              <span className="text-xs px-2.5 py-0.5 rounded-full bg-primary/10 border border-primary/20 text-primary font-medium">
+                Online
               </span>
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 font-semibold hidden sm:inline-block">
-                Zero Data Loss
+              <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 font-medium hidden sm:inline-block">
+                Bảo toàn dữ liệu
               </span>
             </div>
-            <p className="text-xs text-muted-foreground truncate">
-              Nén văn bản, JSON và SQL thành 1 dòng duy nhất • Bảo toàn tuyệt đối kiểu dữ liệu & an toàn bộ nhớ
+            <p className="text-xs text-muted-foreground truncate leading-relaxed">
+              Nén văn bản, JSON và SQL thành 1 dòng duy nhất • Bảo toàn kiểu dữ liệu & an toàn bộ nhớ
             </p>
           </div>
         </div>
 
         {/* Action Header Tools */}
         <div className="flex items-center gap-2 flex-wrap">
-          {/* AI Agents Squad Button */}
-          <button
-            type="button"
-            onClick={() => setIsAgentsModalOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-indigo-500/10 via-purple-500/10 to-pink-500/10 border border-indigo-500/30 text-indigo-600 dark:text-indigo-400 text-xs font-bold hover:bg-indigo-500/20 transition shadow-xs"
-            title="Xem & Sao chép System Prompts cho 4 AI Agents: Thiết kế, Coder, QA, Review"
-          >
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>AI Agents (/boost)</span>
-          </button>
-
           {/* Compress Now Button */}
           <button
             type="button"
@@ -320,14 +307,14 @@ export const TextFormatterPage: React.FC = () => {
               toast.success('Đã nén định dạng thành công!', { id: 'manual-format' });
             }}
             disabled={isProcessing || !inputText}
-            className={`flex items-center gap-1.5 px-4 py-1.5 rounded-xl text-xs font-bold transition shadow-md ${
+            className={`flex items-center gap-1.5 px-4 py-1.5 rounded-xl text-xs font-semibold transition shadow-xs ${
               isLargePayload || (!autoFormat && inputText !== lastExecutedInput)
                 ? 'bg-amber-500 hover:bg-amber-600 text-white animate-pulse'
                 : 'bg-primary hover:bg-primary/90 text-primary-foreground'
             } disabled:opacity-50 disabled:cursor-not-allowed`}
           >
             <Play className="w-3.5 h-3.5 fill-current" />
-            <span>{isProcessing ? 'Đang Nén...' : 'Nén Ngay (Ctrl+Enter)'}</span>
+            <span>{isProcessing ? 'Đang nén...' : 'Nén ngay (Ctrl+Enter)'}</span>
           </button>
         </div>
       </div>
@@ -692,21 +679,15 @@ export const TextFormatterPage: React.FC = () => {
 
           <div className="p-4 rounded-xl bg-card border border-border shadow-2xs space-y-1.5">
             <div className="flex items-center gap-2 text-foreground font-bold text-xs">
-              <Sparkles className="w-4 h-4 text-primary" />
-              <span>Hỗ Trợ 4 AI Agents (/boost)</span>
+              <Sliders className="w-4 h-4 text-primary" />
+              <span>Tùy Biến Phân Tách Linh Hoạt</span>
             </div>
             <p className="text-[11px] text-muted-foreground leading-relaxed">
-              Tích hợp sẵn bộ System Prompt chuẩn mực cho các Agent: Thiết Kế UI/UX, Coder, Kỹ sư QA và Lead Reviewer.
+              Hỗ trợ gom dòng với dấu cách, dấu phẩy, pipe (|), chấm phẩy hoặc bất kỳ ký tự phân cách nào bạn chỉ định.
             </p>
           </div>
         </div>
       </div>
-
-      {/* AI Agents Squad Modal */}
-      <AgentPromptsModal
-        isOpen={isAgentsModalOpen}
-        onClose={() => setIsAgentsModalOpen(false)}
-      />
     </div>
   );
 };

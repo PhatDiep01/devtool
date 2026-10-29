@@ -75,13 +75,13 @@ export const ImportScreen: React.FC = () => {
         className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors p-1"
       >
         <ArrowLeft className="w-4 h-4" />
-        <span>Back to Documents</span>
+        <span>Quay lại danh sách</span>
       </button>
 
       <div>
-        <h2 className="text-xl sm:text-2xl font-extrabold tracking-tight text-foreground">Import Handover Document</h2>
-        <p className="text-xs sm:text-sm text-muted-foreground mt-1">
-          Upload a Markdown (.md) file created using the standard Screen Specification Template.
+        <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-foreground">Nhập đặc tả tài liệu (.md)</h1>
+        <p className="text-xs sm:text-sm text-muted-foreground mt-1 leading-relaxed">
+          Tải lên file Markdown (.md) đặc tả màn hình kỹ thuật để lưu trữ và quản lý trong hệ thống.
         </p>
       </div>
 
@@ -93,9 +93,9 @@ export const ImportScreen: React.FC = () => {
           </div>
         )}
 
-        <div className="bg-card border border-border rounded-2xl p-5 sm:p-6 shadow-sm space-y-4">
+        <div className="bg-card border border-border rounded-2xl p-5 sm:p-6 shadow-xs space-y-4">
           <div>
-            <label className="text-xs font-bold text-foreground block mb-1.5">Target Module</label>
+            <label className="text-xs font-semibold text-foreground block mb-1.5">Nhóm tính năng (Module)</label>
             <select
               value={selectedModuleId}
               onChange={(e) => setSelectedModuleId(e.target.value)}
@@ -109,12 +109,12 @@ export const ImportScreen: React.FC = () => {
               ))}
             </select>
             <p className="text-[11px] text-muted-foreground mt-1">
-              If the markdown frontmatter specifies a module name, it will automatically match or register it.
+              Nếu trong file .md đã có frontmatter khai báo nhóm, hệ thống sẽ tự động ghép vào nhóm tương ứng.
             </p>
           </div>
 
           <div>
-            <label className="text-xs font-bold text-foreground block mb-1.5">Markdown Specification File</label>
+            <label className="text-xs font-semibold text-foreground block mb-1.5">File Markdown đặc tả</label>
             <div 
               onDragOver={(e) => {
                 e.preventDefault();

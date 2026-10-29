@@ -261,14 +261,14 @@ export const DocsDashboard: React.FC = () => {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
-            <h1 className="text-xl sm:text-2xl md:text-3xl font-extrabold tracking-tight text-foreground uppercase">
-              TÀI LIỆU ĐẶC TẢ
+            <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-foreground">
+              Tài liệu đặc tả
             </h1>
-            <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">
-              Handover Portal
+            <span className="text-[11px] font-medium px-2.5 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">
+              Bàn giao kỹ thuật
             </span>
           </div>
-          <p className="text-xs sm:text-sm text-muted-foreground mt-1 max-w-2xl">
+          <p className="text-xs sm:text-sm text-muted-foreground mt-1 max-w-2xl leading-relaxed">
             Quản lý nhóm tính năng, bàn giao tài liệu kỹ thuật, business rules & API cho từng màn hình.
           </p>
         </div>
@@ -278,11 +278,11 @@ export const DocsDashboard: React.FC = () => {
           <button
             onClick={handleSyncDisk}
             disabled={syncing}
-            className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 bg-card hover:bg-accent text-foreground rounded-xl transition border border-border shadow-sm disabled:opacity-50"
+            className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 bg-card hover:bg-accent text-foreground rounded-xl transition border border-border shadow-xs disabled:opacity-50"
             title="Quét và nạp lại file .md từ ổ đĩa vào CSDL (hữu ích khi git pull hoặc có người sửa file bên ngoài)"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin text-primary' : 'text-muted-foreground'}`} />
-            <span className="hidden sm:inline">Đồng Bộ Disk</span>
+            <span className="hidden sm:inline">Đồng bộ ổ đĩa</span>
           </button>
 
           <button
@@ -294,10 +294,10 @@ export const DocsDashboard: React.FC = () => {
               setModuleFormDesc('');
               setShowModuleModal(true);
             }}
-            className="flex items-center gap-1.5 text-xs font-semibold px-3 sm:px-4 py-2 bg-secondary text-secondary-foreground hover:bg-secondary/80 rounded-xl transition border border-border shadow-sm"
+            className="flex items-center gap-1.5 text-xs font-semibold px-3 sm:px-4 py-2 bg-secondary text-secondary-foreground hover:bg-secondary/80 rounded-xl transition border border-border shadow-xs"
           >
             <FolderPlus className="w-4 h-4 text-primary" />
-            <span>+ <span className="hidden sm:inline">Tạo </span>Nhóm<span className="hidden sm:inline"> Mới</span></span>
+            <span>Tạo nhóm mới</span>
           </button>
 
           <button
@@ -305,15 +305,15 @@ export const DocsDashboard: React.FC = () => {
               const defaultMod = selectedModuleId !== 'all' ? selectedModuleId : (modules[0]?.id || '');
               navigate(`/docs/screens/new${defaultMod ? `?module=${defaultMod}` : ''}`);
             }}
-            className="flex items-center gap-1.5 text-xs font-bold px-3.5 sm:px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90 rounded-xl transition shadow-sm"
+            className="flex items-center gap-1.5 text-xs font-semibold px-3.5 sm:px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90 rounded-xl transition shadow-xs"
           >
             <Plus className="w-4 h-4" />
-            <span>+ <span className="hidden sm:inline">Tạo </span>Màn Hình</span>
+            <span>Tạo màn hình</span>
           </button>
 
           <button
             onClick={() => navigate('/docs/import')}
-            className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 bg-card hover:bg-accent text-foreground rounded-xl transition border border-border shadow-sm"
+            className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 bg-card hover:bg-accent text-foreground rounded-xl transition border border-border shadow-xs"
             title="Import file Markdown (.md) có sẵn"
           >
             <FileText className="w-3.5 h-3.5 text-muted-foreground" />
@@ -325,41 +325,41 @@ export const DocsDashboard: React.FC = () => {
       {/* ================= METRICS STATS ================= */}
       {stats && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
-          <div className="bg-card border border-border rounded-2xl p-4 sm:p-5 shadow-sm">
+          <div className="bg-card border border-border rounded-2xl p-4 sm:p-5 shadow-xs">
             <div className="flex items-center justify-between">
-              <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">Nhóm Tính Năng</span>
+              <span className="text-xs font-medium text-muted-foreground">Nhóm tính năng</span>
               <Layers className="w-4 h-4 text-blue-500" />
             </div>
-            <div className="text-2xl sm:text-3xl font-extrabold mt-2 text-foreground">{modules.length}</div>
+            <div className="text-2xl sm:text-3xl font-bold mt-2 text-foreground tabular-nums">{modules.length}</div>
             <div className="text-[11px] text-muted-foreground mt-1">Modules cấu hình</div>
           </div>
 
-          <div className="bg-card border border-border rounded-2xl p-4 sm:p-5 shadow-sm">
+          <div className="bg-card border border-border rounded-2xl p-4 sm:p-5 shadow-xs">
             <div className="flex items-center justify-between">
-              <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">Tổng Màn Hình</span>
+              <span className="text-xs font-medium text-muted-foreground">Tổng màn hình</span>
               <FileText className="w-4 h-4 text-purple-500" />
             </div>
-            <div className="text-2xl sm:text-3xl font-extrabold mt-2 text-foreground">{screens.length}</div>
+            <div className="text-2xl sm:text-3xl font-bold mt-2 text-foreground tabular-nums">{screens.length}</div>
             <div className="text-[11px] text-muted-foreground mt-1">Đã lập đặc tả</div>
           </div>
 
-          <div className="bg-card border border-border rounded-2xl p-4 sm:p-5 shadow-sm">
+          <div className="bg-card border border-border rounded-2xl p-4 sm:p-5 shadow-xs">
             <div className="flex items-center justify-between">
-              <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">Đã Bàn Giao</span>
+              <span className="text-xs font-medium text-muted-foreground">Đã bàn giao</span>
               <CheckCircle2 className="w-4 h-4 text-emerald-500" />
             </div>
-            <div className="text-2xl sm:text-3xl font-extrabold mt-2 text-emerald-500">
+            <div className="text-2xl sm:text-3xl font-bold mt-2 text-emerald-600 dark:text-emerald-400 tabular-nums">
               {stats.byStatus['Published'] || 0}
             </div>
             <div className="text-[11px] text-muted-foreground mt-1">Published hoàn chỉnh</div>
           </div>
 
-          <div className="bg-card border border-border rounded-2xl p-4 sm:p-5 shadow-sm">
+          <div className="bg-card border border-border rounded-2xl p-4 sm:p-5 shadow-xs">
             <div className="flex items-center justify-between">
-              <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">Bản Nháp / Đang Làm</span>
+              <span className="text-xs font-medium text-muted-foreground">Bản nháp / Đang làm</span>
               <AlertCircle className="w-4 h-4 text-amber-500" />
             </div>
-            <div className="text-2xl sm:text-3xl font-extrabold mt-2 text-amber-500">
+            <div className="text-2xl sm:text-3xl font-bold mt-2 text-amber-600 dark:text-amber-400 tabular-nums">
               {stats.byStatus['Draft'] || 0}
             </div>
             <div className="text-[11px] text-muted-foreground mt-1">Draft đang cập nhật</div>
@@ -370,9 +370,9 @@ export const DocsDashboard: React.FC = () => {
       {/* ================= SELECTOR NHÓM (GROUPS TABS / FILTER) ================= */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <label className="text-xs font-extrabold text-foreground uppercase tracking-wider flex items-center gap-1.5">
+          <label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
             <Layers className="w-4 h-4 text-primary" />
-            <span>Chọn Nhóm Tính Năng (Modules)</span>
+            <span>Chọn nhóm tính năng (Modules)</span>
           </label>
           <span className="text-xs text-muted-foreground">
             {modules.length} nhóm được cấu hình

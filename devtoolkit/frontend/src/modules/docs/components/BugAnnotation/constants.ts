@@ -70,3 +70,17 @@ export const SHORTCUTS_LIST = [
   { key: 'F', label: 'Vừa vặn khung hình (Fit)' },
   { key: 'Space + Drag', label: 'Kéo không gian làm việc (Pan)' },
 ];
+
+export function getAnnotationTypeName(type: string): string {
+  switch (type) {
+    case 'rect': return 'Khoanh vùng lỗi';
+    case 'circle': return 'Vùng tròn / Elip';
+    case 'arrow': return 'Mũi tên chỉ lỗi';
+    case 'line': return 'Đường gạch / Nối';
+    case 'badge': return 'Số thứ tự (Pin)';
+    case 'text': return 'Hộp văn bản';
+    case 'highlight': return 'Làm nổi bật';
+    case 'pen': return 'Vẽ tự do';
+    default: return 'Điểm đánh dấu';
+  }
+}

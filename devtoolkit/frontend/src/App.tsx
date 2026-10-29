@@ -9,18 +9,22 @@ import { ScreenEditorPage } from './modules/docs/pages/ScreenEditorPage';
 import { ImportScreen } from './modules/docs/pages/ImportScreen';
 import { SearchResults } from './modules/docs/pages/SearchResults';
 import { BugTrackerPage } from './modules/docs/pages/BugTrackerPage';
+import { ApiDocsPage } from './modules/docs/pages/ApiDocsPage';
 import { JiraDashboard } from './modules/jira/pages/JiraDashboard';
 import { KanbanBoard } from './modules/jira/pages/KanbanBoard';
 import { JiraSprintsPage } from './modules/jira/pages/JiraSprintsPage';
 import { JiraTasksPage } from './modules/jira/pages/JiraTasksPage';
 import { JiraLogworkPage } from './modules/jira/pages/JiraLogworkPage';
+import { JiraActivityStreamPage } from './modules/jira/pages/JiraActivityStreamPage';
 import { JiraRouteGuard } from './modules/jira/components/JiraRouteGuard';
 import { SettingsPage } from './modules/settings/SettingsPage';
 import { TextFormatterPage } from './modules/tools/TextFormatter/TextFormatterPage';
 import { CompareTextPage } from './modules/tools/CompareText/CompareTextPage';
 import { StickyNotesPage } from './modules/tools/StickyNotes/StickyNotesPage';
+import { CryptoIdentityPage } from './modules/tools/CryptoIdentity';
 import { useThemeStore } from './stores/theme.store';
 import { PageTitleManager } from './utils/usePageTitle';
+import { AppUpdateModal } from './components/common/AppUpdateModal';
 
 export const App: React.FC = () => {
   const { theme } = useThemeStore();
@@ -43,6 +47,7 @@ export const App: React.FC = () => {
           
           {/* Docs Module */}
           <Route path="/docs" element={<DocsDashboard />} />
+          <Route path="/docs/api" element={<ApiDocsPage />} />
           <Route path="/docs/bugs" element={<BugTrackerPage />} />
           <Route path="/docs/:moduleSlug" element={<ModuleScreens />} />
           <Route path="/docs/screen/:id" element={<ScreenDetail />} />
@@ -57,6 +62,14 @@ export const App: React.FC = () => {
             element={
               <JiraRouteGuard>
                 <JiraDashboard />
+              </JiraRouteGuard>
+            } 
+          />
+          <Route 
+            path="/jira/board" 
+            element={
+              <JiraRouteGuard>
+                <KanbanBoard />
               </JiraRouteGuard>
             } 
           />
@@ -92,8 +105,17 @@ export const App: React.FC = () => {
               </JiraRouteGuard>
             } 
           />
+          <Route 
+            path="/jira/activity-stream" 
+            element={
+              <JiraRouteGuard>
+                <JiraActivityStreamPage />
+              </JiraRouteGuard>
+            } 
+          />
 
           {/* Dev Tools Module */}
+          <Route path="/tools/crypto-identity" element={<CryptoIdentityPage />} />
           <Route path="/tools/sticky-notes" element={<StickyNotesPage />} />
           <Route path="/tools/text-formatter" element={<TextFormatterPage />} />
           <Route path="/tools/compare-text" element={<CompareTextPage />} />
@@ -107,6 +129,7 @@ export const App: React.FC = () => {
         </Route>
       </Routes>
       <AppToaster position="top-right" />
+      <AppUpdateModal />
     </>
   );
 };

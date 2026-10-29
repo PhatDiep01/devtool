@@ -9,6 +9,22 @@ export interface Module {
   screen_count?: number;
 }
 
+export interface ScreenImage {
+  id: number;
+  screen_id?: number | null;
+  original_name: string;
+  stored_name: string;
+  mime_type?: string;
+  size_bytes?: number;
+  created_at?: string;
+  url: string;
+  isPending?: boolean;
+  tempId?: string;
+  file?: File;
+  width?: number;
+  height?: number;
+}
+
 export interface Screen {
   id: number;
   module_id: number;
@@ -28,6 +44,7 @@ export interface Screen {
   module_slug?: string;
   module_icon?: string;
   module_color?: string;
+  images?: ScreenImage[];
 }
 
 export interface ParsedDocument {
@@ -64,13 +81,18 @@ export interface JiraIssue {
       id?: string; 
       hierarchyLevel?: number;
     };
+    project?: { key: string; name?: string; id?: string };
     assignee?: { 
+      name?: string;
+      key?: string;
       displayName: string; 
       accountId?: string; 
       emailAddress?: string; 
       avatarUrls?: Record<string, string>;
     } | null;
     reporter?: { 
+      name?: string;
+      key?: string;
       displayName: string; 
       accountId?: string; 
       emailAddress?: string; 
@@ -94,6 +116,15 @@ export interface JiraIssue {
         priority?: { name: string; iconUrl?: string };
         issuetype?: { name: string; iconUrl?: string; subtask?: boolean };
         assignee?: { displayName: string; avatarUrls?: Record<string, string> } | null;
+        timetracking?: {
+          originalEstimate?: string;
+          remainingEstimate?: string;
+          timeSpent?: string;
+          originalEstimateSeconds?: number;
+          remainingEstimateSeconds?: number;
+          timeSpentSeconds?: number;
+        };
+        timespent?: number;
       };
     }>;
     timetracking?: {
@@ -257,8 +288,16 @@ export interface JiraAssignedSubtask {
   isSubtask: boolean;
   priority?: { name: string; iconUrl?: string };
   parent?: { key: string; summary: string; status?: { name: string } };
-  timetracking?: { timeSpent?: string; remainingEstimate?: string; originalEstimate?: string };
+  timetracking?: {
+    timeSpent?: string;
+    remainingEstimate?: string;
+    originalEstimate?: string;
+    timeSpentSeconds?: number;
+    remainingEstimateSeconds?: number;
+    originalEstimateSeconds?: number;
+  };
   updated?: string;
+  duedate?: string;
 }
 
 export interface WeeklyCalendarDay {
@@ -323,7 +362,18 @@ export interface DashboardStats {
   recentScreens: Screen[];
 }
 
+export interface JiraSavedAccount {
+  username: string;
+  userEmail?: string;
+  displayName: string;
+  avatarUrl?: string;
+  baseUrl: string;
+  authType?: string;
+  isDefault?: boolean;
+}
+
 export interface JiraUser {
+  username?: string;
   displayName: string;
   emailAddress: string;
   avatarUrl?: string;
@@ -335,7 +385,10 @@ export interface JiraConfigInfo {
   hasConfigured: boolean;
   configuredBaseUrl: string;
   configuredEmail: string;
+  configuredUsername?: string;
+  configuredDisplayName?: string;
   authType?: string;
+  savedAccounts?: JiraSavedAccount[];
 }
 
 export interface JiraLoginParams {
@@ -349,14 +402,19 @@ export interface JiraLoginParams {
   bearerToken?: string;
   useWorkspace?: boolean;
   rememberMe?: boolean;
+  captchaId?: string;
+  captchaResponse?: string;
 }
 
 export interface JiraAuthResponse {
   success: boolean;
-  token: string;
-  expiresAt: string;
-  user: JiraUser;
+  token?: string;
+  expiresAt?: string;
+  user?: JiraUser;
   message?: string;
+  isCaptcha?: boolean;
+  captchaId?: string;
+  captchaImage?: string;
 }
 
 export interface JiraCreateIssuePayload {
@@ -458,6 +516,7 @@ export interface BugItem {
   status: BugStatus;
   severity: BugSeverity;
   description?: string | null;
+  payload?: string | null;
   fix_solution?: string | null;
   attachments: BugAttachment[];
   annotations?: Record<string, BugImageAnnotationRecord>;
@@ -493,6 +552,176 @@ export interface JiraCreateWorklogPayload {
   adjustEstimate?: 'auto' | 'leave' | 'manual';
 }
 
+export interface ActivityStreamWorklog {
+  worklogId: string;
+  issueKey: string;
+  issueSummary: string;
+  issueType?: { name: string; iconUrl?: string; subtask?: boolean };
+  issueStatus?: { name: string; statusCategory?: { key: string } };
+  project?: { key: string; name: string };
+  isSubtask: boolean;
+  parent?: { key: string; summary?: string } | null;
+  author: {
+    name: string;
+    displayName: string;
+    avatarUrl?: string;
+    emailAddress?: string;
+  };
+  started: string;
+  startedDate: string;
+  timeSpent: string;
+  timeSpentSeconds: number;
+  commentText: string;
+  created?: string;
+  updated?: string;
+}
+
+export interface ActivityStreamUserAgg {
+  name: string;
+  displayName: string;
+  avatarUrl?: string;
+  emailAddress?: string;
+  totalSeconds: number;
+  totalHours: number;
+  formattedTime: string;
+  worklogsCount: number;
+}
+
+export interface ActivityStreamResponse {
+  startDate: string;
+  endDate: string;
+  totalSeconds: number;
+  totalHours: number;
+  totalWorklogsCount: number;
+  uniqueUsersCount: number;
+  uniqueIssuesCount: number;
+  users: ActivityStreamUserAgg[];
+  worklogs: ActivityStreamWorklog[];
+}
+
 export * from './sticky-notes';
+
+// ==========================================
+// API DOCUMENTATION TYPES
+// ==========================================
+export type ApiMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS';
+export type ApiStatus = 'draft' | 'stable' | 'deprecated' | 'removed';
+export type ApiAuthType = 'none' | 'bearer' | 'apikey' | 'basic' | 'custom';
+export type ApiParameterLocation = 'path' | 'query' | 'header' | 'cookie';
+
+export interface ApiParameter {
+  name: string;
+  in: ApiParameterLocation;
+  type: string;
+  required: boolean;
+  default?: string;
+  example?: string;
+  description?: string;
+  constraints?: string;
+}
+
+export interface ApiRequestBodySample {
+  name: string;
+  contentType: string;
+  schemaModel?: string;
+  body: string;
+}
+
+export interface ApiResponseHeader {
+  name: string;
+  value: string;
+  description?: string;
+}
+
+export interface ApiResponseSample {
+  name: string;
+  body: string;
+}
+
+export interface ApiResponse {
+  statusCode: number;
+  description: string;
+  headers?: ApiResponseHeader[];
+  schemaModel?: string;
+  examples: ApiResponseSample[];
+}
+
+export interface ApiHistoryItem {
+  author: string;
+  action: string;
+  timestamp: string;
+}
+
+export interface ApiEndpoint {
+  id: number;
+  module_id: number;
+  folder: string;
+  version: string;
+  method: ApiMethod;
+  path: string;
+  title: string;
+  description?: string;
+  status: ApiStatus;
+  deprecated_reason?: string;
+  replaced_by_id?: number;
+  tags: string[];
+  assignee?: string;
+  auth_type: ApiAuthType;
+  auth_roles?: string;
+  parameters: ApiParameter[];
+  request_bodies: ApiRequestBodySample[];
+  responses: ApiResponse[];
+  related_error_codes: string[];
+  business_notes?: string;
+  rate_limit?: string;
+  change_history: ApiHistoryItem[];
+  linked_screen_id?: number;
+  linked_bug_id?: number;
+  is_pinned: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ApiModelField {
+  name: string;
+  type: string;
+  required: boolean;
+  description?: string;
+  example?: any;
+  constraints?: string;
+  enum?: string[];
+  children?: ApiModelField[];
+}
+
+export interface ApiModel {
+  id: number;
+  module_id: number;
+  name: string;
+  description?: string;
+  fields: ApiModelField[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ApiErrorCode {
+  id: number;
+  module_id?: number | null;
+  code: string;
+  http_status: number;
+  message: string;
+  description?: string;
+  resolution?: string;
+  category: 'auth' | 'validation' | 'business' | 'system';
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ApiEnvironment {
+  id: string;
+  name: string;
+  url: string;
+  is_default: boolean;
+}
 
 

@@ -1,4 +1,5 @@
-import React, { useRef } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { 
   Plus, 
   Upload, 
@@ -74,6 +75,33 @@ export const StickyNotesPage: React.FC = () => {
   } = useStickyNotes();
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [openColorPickerNoteId, setOpenColorPickerNoteId] = useState<string | null>(null);
+  const [searchParams] = useSearchParams();
+
+  // Handle noteId from URL (e.g. from global search)
+  useEffect(() => {
+    const targetNoteId = searchParams.get('noteId');
+    if (targetNoteId && notes.length > 0) {
+      const match = notes.find(n => n.id === targetNoteId);
+      if (match) {
+        setActiveNote(match);
+        setIsEditorOpen(true);
+      }
+    }
+  }, [searchParams, notes, setActiveNote, setIsEditorOpen]);
+
+  // Close color popover when clicking anywhere outside
+  useEffect(() => {
+    if (!openColorPickerNoteId) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target?.closest('.sticky-color-picker-container')) {
+        setOpenColorPickerNoteId(null);
+      }
+    };
+    window.addEventListener('mousedown', handleClickOutside);
+    return () => window.removeEventListener('mousedown', handleClickOutside);
+  }, [openColorPickerNoteId]);
 
   const handleOpenTrash = () => {
     fetchTrash();
@@ -111,10 +139,10 @@ export const StickyNotesPage: React.FC = () => {
               <StickyNoteIcon className="w-5 h-5" />
             </div>
             <div>
-              <h1 className="text-xl sm:text-2xl font-black text-foreground tracking-tight">
+              <h1 className="text-xl sm:text-2xl font-bold text-foreground tracking-tight">
                 Sticky Notes
               </h1>
-              <p className="text-xs sm:text-sm text-muted-foreground">
+              <p className="text-xs sm:text-sm text-muted-foreground leading-relaxed">
                 Ghi chú nhanh lưu trữ độc lập dạng file .txt UTF-8 (Thư mục <code className="text-xs bg-muted px-1.5 py-0.5 rounded font-mono">sticky_notes/</code>)
               </p>
             </div>
@@ -126,7 +154,7 @@ export const StickyNotesPage: React.FC = () => {
           <button
             type="button"
             onClick={handleOpenFilePicker}
-            className="px-3.5 py-2 text-xs sm:text-sm font-semibold rounded-xl border border-border bg-card hover:bg-accent text-foreground transition flex items-center gap-2 shadow-sm"
+            className="px-3.5 py-2 text-xs sm:text-sm font-semibold rounded-xl border border-border bg-card hover:bg-accent text-foreground transition flex items-center gap-2 shadow-xs"
           >
             <Upload className="w-4 h-4 text-primary" />
             <span>Nhập file .txt</span>
@@ -135,7 +163,7 @@ export const StickyNotesPage: React.FC = () => {
           <button
             type="button"
             onClick={handleOpenTrash}
-            className="px-3.5 py-2 text-xs sm:text-sm font-semibold rounded-xl border border-border bg-card hover:bg-accent text-foreground transition flex items-center gap-2 shadow-sm"
+            className="px-3.5 py-2 text-xs sm:text-sm font-semibold rounded-xl border border-border bg-card hover:bg-accent text-foreground transition flex items-center gap-2 shadow-xs"
           >
             <Trash2 className="w-4 h-4 text-muted-foreground" />
             <span>Thùng rác</span>
@@ -144,10 +172,10 @@ export const StickyNotesPage: React.FC = () => {
           <button
             type="button"
             onClick={() => handleCreateNote()}
-            className="px-4 py-2 text-xs sm:text-sm font-bold rounded-xl bg-primary text-primary-foreground hover:opacity-90 transition flex items-center gap-2 shadow-md shadow-primary/20"
+            className="px-4 py-2 text-xs sm:text-sm font-semibold rounded-xl bg-primary text-primary-foreground hover:bg-primary/90 transition flex items-center gap-2 shadow-xs"
           >
             <Plus className="w-4 h-4" />
-            <span>Tạo Ghi Chú Mới</span>
+            <span>Tạo ghi chú mới</span>
           </button>
         </div>
       </div>
@@ -293,7 +321,9 @@ export const StickyNotesPage: React.FC = () => {
                   setActiveNote(note);
                   setIsEditorOpen(true);
                 }}
-                className={`group rounded-2xl border p-4 transition-all duration-200 cursor-pointer flex flex-col justify-between shadow-sm hover:shadow-md relative overflow-hidden ${colorConfig.cardBgClass} ${colorConfig.borderClass}`}
+                className={`group rounded-2xl border p-4 transition-all duration-200 cursor-pointer flex flex-col justify-between shadow-sm hover:shadow-md relative ${
+                  openColorPickerNoteId === note.id ? 'z-20 ring-1 ring-primary/30' : 'hover:z-10'
+                } ${colorConfig.cardBgClass} ${colorConfig.borderClass}`}
               >
                 {/* Card Top: Pin + Title */}
                 <div>
@@ -337,24 +367,57 @@ export const StickyNotesPage: React.FC = () => {
                     onClick={(e) => e.stopPropagation()}
                   >
                     {/* Quick Color Picker Dropdown / Dot */}
-                    <div className="relative group/color">
+                    <div className="relative group/color sticky-color-picker-container">
                       <button
                         type="button"
-                        className="w-4 h-4 rounded-full border border-black/10 dark:border-white/10 shrink-0"
-                        style={{ backgroundColor: colorConfig.hex }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setOpenColorPickerNoteId(prev => prev === note.id ? null : note.id);
+                        }}
+                        className="p-1 rounded-md hover:bg-black/10 dark:hover:bg-white/10 transition flex items-center justify-center shrink-0"
                         title="Đổi màu ghi chú"
-                      />
-                      <div className="absolute bottom-full right-0 mb-1 hidden group-hover/color:flex items-center gap-1 p-1 bg-popover border border-border rounded-lg shadow-lg z-20">
-                        {STICKY_COLORS.map((c) => (
-                          <button
-                            key={c.id}
-                            type="button"
-                            onClick={(e) => handleChangeColor(note, c.id, e)}
-                            style={{ backgroundColor: c.hex }}
-                            className="w-4 h-4 rounded-full hover:scale-125 transition-transform"
-                            title={c.label}
-                          />
-                        ))}
+                      >
+                        <span
+                          className="w-3.5 h-3.5 rounded-full border border-black/20 dark:border-white/20 shadow-xs block"
+                          style={{ backgroundColor: colorConfig.hex }}
+                        />
+                      </button>
+
+                      {/* Floating Color Palette with Gapless Hitbox */}
+                      <div
+                        className={`absolute bottom-full right-0 pb-2 z-30 ${
+                          openColorPickerNoteId === note.id
+                            ? 'flex'
+                            : 'hidden group-hover/color:flex'
+                        }`}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div className="flex items-center gap-1.5 p-1.5 bg-popover/95 backdrop-blur-md border border-border rounded-xl shadow-xl animate-in fade-in zoom-in-95 duration-100">
+                          {STICKY_COLORS.map((c) => {
+                            const isSelected = note.color === c.id;
+                            return (
+                              <button
+                                key={c.id}
+                                type="button"
+                                onClick={(e) => {
+                                  handleChangeColor(note, c.id, e);
+                                  setOpenColorPickerNoteId(null);
+                                }}
+                                style={{ backgroundColor: c.hex }}
+                                className={`w-5 h-5 rounded-full border border-black/15 dark:border-white/15 transition-all duration-150 flex items-center justify-center shadow-2xs ${
+                                  isSelected
+                                    ? 'scale-125 ring-2 ring-primary ring-offset-1 z-10'
+                                    : 'hover:scale-125 hover:z-10 opacity-90 hover:opacity-100'
+                                }`}
+                                title={c.label}
+                              >
+                                {isSelected && (
+                                  <Check className="w-2.5 h-2.5 text-black/75 dark:text-black/80 stroke-[3]" />
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
                     </div>
 

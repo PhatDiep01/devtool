@@ -110,3 +110,123 @@ Unhandled error: SyntaxError: Expected property name or '}' in JSON at position 
   body: '{\\',
   type: 'entity.parse.failed'
 }
+D:\Source\docs_tooldev\devtoolkit\backend\dist\db\sqlite.js:42
+    database.exec(`
+             ^
+
+Error: database is locked
+    at runMigrations (D:\Source\docs_tooldev\devtoolkit\backend\dist\db\sqlite.js:42:14)
+    at getDb (D:\Source\docs_tooldev\devtoolkit\backend\dist\db\sqlite.js:29:5)
+    at Object.<anonymous> (D:\Source\docs_tooldev\devtoolkit\backend\dist\index.js:26:20)
+    at Module._compile (node:internal/modules/cjs/loader:1854:14)
+    at Object..js (node:internal/modules/cjs/loader:1985:10)
+    at Module.load (node:internal/modules/cjs/loader:1577:32)
+    at Module._load (node:internal/modules/cjs/loader:1379:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47 {
+  code: 'ERR_SQLITE_ERROR',
+  errcode: 5,
+  errstr: 'database is locked'
+}
+
+Node.js v24.16.0
+D:\Source\docs_tooldev\devtoolkit\backend\dist\db\sqlite.js:42
+    database.exec(`
+             ^
+
+Error: database is locked
+    at runMigrations (D:\Source\docs_tooldev\devtoolkit\backend\dist\db\sqlite.js:42:14)
+    at getDb (D:\Source\docs_tooldev\devtoolkit\backend\dist\db\sqlite.js:29:5)
+    at Object.<anonymous> (D:\Source\docs_tooldev\devtoolkit\backend\dist\index.js:26:20)
+    at Module._compile (node:internal/modules/cjs/loader:1854:14)
+    at Object..js (node:internal/modules/cjs/loader:1985:10)
+    at Module.load (node:internal/modules/cjs/loader:1577:32)
+    at Module._load (node:internal/modules/cjs/loader:1379:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47 {
+  code: 'ERR_SQLITE_ERROR',
+  errcode: 5,
+  errstr: 'database is locked'
+}
+
+Node.js v24.16.0
+Could not acquire Jira session cookie for attachments: Request failed with status code 401
+Could not acquire Jira session cookie for attachments: Request failed with status code 401
+Could not acquire Jira session cookie for attachments: Request failed with status code 401
+Could not acquire Jira session cookie for attachments: Request failed with status code 401
+Could not acquire Jira session cookie for attachments: Request failed with status code 401
+Could not acquire Jira session cookie for attachments: Request failed with status code 401
+Could not acquire Jira session cookie for attachments: Request failed with status code 401
+Could not acquire Jira session cookie for attachments: Request failed with status code 401
+Could not acquire Jira session cookie for attachments: Request failed with status code 401
+Could not acquire Jira session cookie for attachments: Request failed with status code 401
+Could not acquire Jira session cookie for attachments: Request failed with status code 401
+Could not acquire Jira session cookie for attachments: Request failed with status code 401
+Could not acquire Jira session cookie for attachments: Request failed with status code 401
+Could not acquire Jira session cookie for attachments: Request failed with status code 401
+Could not acquire Jira session cookie for attachments: Request failed with status code 401
+Could not acquire Jira session cookie for attachments: Request failed with status code 401
+D:\Source\docs_tooldev\devtoolkit\backend\dist\db\sqlite.js:42
+    database.exec(`
+             ^
+
+Error: database is locked
+    at runMigrations (D:\Source\docs_tooldev\devtoolkit\backend\dist\db\sqlite.js:42:14)
+    at getDb (D:\Source\docs_tooldev\devtoolkit\backend\dist\db\sqlite.js:29:5)
+    at Object.<anonymous> (D:\Source\docs_tooldev\devtoolkit\backend\dist\index.js:26:20)
+    at Module._compile (node:internal/modules/cjs/loader:1854:14)
+    at Object..js (node:internal/modules/cjs/loader:1985:10)
+    at Module.load (node:internal/modules/cjs/loader:1577:32)
+    at Module._load (node:internal/modules/cjs/loader:1379:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47 {
+  code: 'ERR_SQLITE_ERROR',
+  errcode: 5,
+  errstr: 'database is locked'
+}
+
+Node.js v24.16.0
+D:\Source\docs_tooldev\devtoolkit\backend\dist\db\sqlite.js:26
+    db.exec('PRAGMA journal_mode = WAL;');
+       ^
+
+Error: disk I/O error
+    at getDb (D:\Source\docs_tooldev\devtoolkit\backend\dist\db\sqlite.js:26:8)
+    at Object.<anonymous> (D:\Source\docs_tooldev\devtoolkit\backend\dist\index.js:26:20)
+    at Module._compile (node:internal/modules/cjs/loader:1854:14)
+    at Object..js (node:internal/modules/cjs/loader:1985:10)
+    at Module.load (node:internal/modules/cjs/loader:1577:32)
+    at Module._load (node:internal/modules/cjs/loader:1379:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47 {
+  code: 'ERR_SQLITE_ERROR',
+  errcode: 1546,
+  errstr: 'disk I/O error'
+}
+
+Node.js v24.16.0
+D:\Source\docs_tooldev\devtoolkit\backend\dist\db\sqlite.js:42
+    database.exec(`
+             ^
+
+Error: database is locked
+    at runMigrations (D:\Source\docs_tooldev\devtoolkit\backend\dist\db\sqlite.js:42:14)
+    at getDb (D:\Source\docs_tooldev\devtoolkit\backend\dist\db\sqlite.js:29:5)
+    at Object.<anonymous> (D:\Source\docs_tooldev\devtoolkit\backend\dist\index.js:26:20)
+    at Module._compile (node:internal/modules/cjs/loader:1854:14)
+    at Object..js (node:internal/modules/cjs/loader:1985:10)
+    at Module.load (node:internal/modules/cjs/loader:1577:32)
+    at Module._load (node:internal/modules/cjs/loader:1379:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47 {
+  code: 'ERR_SQLITE_ERROR',
+  errcode: 5,
+  errstr: 'database is locked'
+}
+
+Node.js v24.16.0

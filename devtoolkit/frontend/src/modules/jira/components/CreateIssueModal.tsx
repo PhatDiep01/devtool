@@ -35,7 +35,6 @@ interface CreateIssueModalProps {
 }
 
 export const SUBTASK_TYPE_OPTIONS = [
-  { id: '', label: 'None (Mặc định)' },
   { id: '10016', label: 'Developing' },
   { id: '10200', label: 'Testing' },
   { id: '10015', label: 'Create Document' },
@@ -224,7 +223,8 @@ export const CreateIssueModal: React.FC<CreateIssueModalProps> = ({
 
   if (!isOpen) return null;
 
-  const isSubtask = Boolean(parentKey || isSubtaskOnly);
+  const selectedTypeObj = issueTypes.find(t => t.id === selectedIssueTypeId);
+  const isSubtask = Boolean(parentKey || isSubtaskOnly || selectedTypeObj?.subtask);
   const availableTypes = issueTypes.filter(t => isSubtask ? t.subtask : !t.subtask);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -239,6 +239,10 @@ export const CreateIssueModal: React.FC<CreateIssueModalProps> = ({
     }
     if (isSubtask && !parentKey.trim()) {
       toast.error('Sub-task bắt buộc phải có Parent Key (ví dụ: EMSPRO2-12975)');
+      return;
+    }
+    if (isSubtask && !selectedSubtaskType) {
+      toast.error('Vui lòng chọn Sub-task Type cho Sub-task');
       return;
     }
 
@@ -308,20 +312,56 @@ export const CreateIssueModal: React.FC<CreateIssueModalProps> = ({
     }));
   }, []);
 
+  const currentUserAssignee = useMemo(() => {
+    if (!user || !assignees.length) return null;
+    return assignees.find(
+      a => (a.name && user.username && a.name.toLowerCase() === user.username.toLowerCase()) ||
+           (a.key && user.username && a.key.toLowerCase() === user.username.toLowerCase()) ||
+           (a.displayName && user.displayName && a.displayName.toLowerCase() === user.displayName.toLowerCase()) ||
+           (a.emailAddress && user.emailAddress && a.emailAddress.toLowerCase() === user.emailAddress.toLowerCase()) ||
+           (a.name && user.displayName && user.displayName.toLowerCase().includes(a.name.toLowerCase())) ||
+           (a.accountId && (a.accountId === user.username || a.accountId === (user as any).accountId))
+    ) || null;
+  }, [user, assignees]);
+
   const assigneeOptions = useMemo<SelectOption<string>[]>(() => {
-    return [
-      { value: '', label: 'Automatic / Unassigned' },
-      ...assignees.map((u) => {
-        const val = u.name || u.accountId || '';
-        return {
-          value: val,
-          label: u.displayName,
-          sublabel: u.name && u.name !== u.displayName ? `@${u.name}` : undefined,
-          avatarUrl: u.avatarUrls?.['24x24'] || u.avatarUrls?.['32x32'],
-        };
-      }),
+    const list: SelectOption<string>[] = [
+      { value: '', label: 'Automatic / Unassigned' }
     ];
-  }, [assignees]);
+
+    if (currentUserAssignee) {
+      const myVal = currentUserAssignee.name || currentUserAssignee.key || currentUserAssignee.accountId || '';
+      list.push({
+        value: myVal,
+        label: `⚡ Assign to me (${currentUserAssignee.displayName})`,
+        sublabel: currentUserAssignee.name ? `@${currentUserAssignee.name}` : currentUserAssignee.emailAddress,
+        avatarUrl: currentUserAssignee.avatarUrls?.['24x24'] || currentUserAssignee.avatarUrls?.['32x32'],
+        badge: 'Tôi',
+        badgeColor: 'bg-primary/15 text-primary border border-primary/25 font-bold'
+      });
+    } else if (user?.displayName || user?.username) {
+      list.push({
+        value: user.username || '',
+        label: `⚡ Assign to me (${user.displayName || user.username})`,
+        sublabel: user.username ? `@${user.username}` : user.emailAddress,
+        avatarUrl: user.avatarUrl,
+        badge: 'Tôi',
+        badgeColor: 'bg-primary/15 text-primary border border-primary/25 font-bold'
+      });
+    }
+
+    assignees.forEach((u) => {
+      const val = u.name || u.key || u.accountId || '';
+      list.push({
+        value: val,
+        label: u.displayName,
+        sublabel: u.name && u.name !== u.displayName ? `@${u.name}` : undefined,
+        avatarUrl: u.avatarUrls?.['24x24'] || u.avatarUrls?.['32x32'],
+      });
+    });
+
+    return list;
+  }, [assignees, currentUserAssignee, user]);
 
   const reporterOptions = useMemo<SelectOption<string>[]>(() => {
     return assignees.map((u) => {
@@ -430,15 +470,20 @@ export const CreateIssueModal: React.FC<CreateIssueModalProps> = ({
               {/* Sub-task Type (Custom Field customfield_10214) */}
               {isSubtask ? (
                 <div className="space-y-1.5">
-                  <label className="text-xs font-bold text-foreground flex items-center gap-1.5">
-                    <Tag className="w-3.5 h-3.5 text-purple-500" />
-                    <span>Sub-task Type</span>
+                  <label className="text-xs font-bold text-foreground flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <Tag className="w-3.5 h-3.5 text-purple-500" />
+                      <span>Sub-task Type *</span>
+                    </span>
+                    {!selectedSubtaskType && (
+                      <span className="text-[10px] text-destructive font-medium">Bắt buộc</span>
+                    )}
                   </label>
                   <SearchableSelect
                     options={subtaskTypeOptions}
                     value={selectedSubtaskType}
                     onChange={(val) => setSelectedSubtaskType(val)}
-                    placeholder="Chọn subtask type..."
+                    placeholder="Chọn Sub-task Type *..."
                     searchable={false}
                     size="sm"
                   />
@@ -615,7 +660,7 @@ export const CreateIssueModal: React.FC<CreateIssueModalProps> = ({
                 </button>
                 <button
                   type="submit"
-                  disabled={submitting || !summary.trim() || (isSubtask && !parentKey.trim())}
+                  disabled={submitting || !summary.trim() || (isSubtask && (!parentKey.trim() || !selectedSubtaskType))}
                   className="px-5 py-2.5 bg-primary hover:bg-primary/90 text-primary-foreground font-bold rounded-xl text-xs transition shadow-md disabled:opacity-50 flex items-center gap-2"
                 >
                   {submitting ? (

@@ -86,19 +86,19 @@ export const CompareTextPage: React.FC = () => {
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-border pb-5">
         <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2">
-            <ArrowLeftRight className="w-6 h-6 text-primary" />
-            Compare Text Online
+          <h1 className="text-xl sm:text-2xl font-bold flex items-center gap-2 tracking-tight">
+            <ArrowLeftRight className="w-5 h-5 text-primary" />
+            So sánh văn bản (Diff)
           </h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            So sánh văn bản phía client với chế độ 2 lưới trực quan, phân tách dòng xóa đỏ (-), dòng thêm xanh (+), intra-line highlight và đồng bộ cuộn mượt mà.
+          <p className="text-xs sm:text-sm text-muted-foreground mt-1 leading-relaxed">
+            So sánh văn bản trực quan 2 cột (side-by-side) hoặc hợp nhất (unified), tô màu khác biệt cấp độ dòng và ký tự, hỗ trợ xuất bản vá (patch).
           </p>
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
           <button
             onClick={resetToDefault}
-            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-border hover:bg-accent flex items-center gap-1.5 transition-colors"
+            className="px-3 py-1.5 text-xs font-semibold rounded-xl border border-border hover:bg-accent flex items-center gap-1.5 transition-colors shadow-xs"
             title="Khôi phục tùy chọn mặc định"
           >
             <RotateCcw className="w-3.5 h-3.5" />
@@ -108,10 +108,10 @@ export const CompareTextPage: React.FC = () => {
           <button
             onClick={() => executeCompare()}
             disabled={isProcessing}
-            className="px-5 py-2 text-sm font-semibold rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 flex items-center gap-2 shadow-sm transition-all disabled:opacity-50"
+            className="px-4 py-2 text-xs sm:text-sm font-semibold rounded-xl bg-primary text-primary-foreground hover:bg-primary/90 flex items-center gap-2 shadow-xs transition-all disabled:opacity-50"
           >
             <Play className={`w-4 h-4 ${isProcessing ? 'animate-spin' : ''}`} />
-            {isProcessing ? 'Comparing...' : 'Compare'}
+            {isProcessing ? 'Đang so sánh...' : 'So sánh ngay'}
           </button>
         </div>
       </div>

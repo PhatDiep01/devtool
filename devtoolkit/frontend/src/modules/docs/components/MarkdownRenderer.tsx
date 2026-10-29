@@ -1,17 +1,38 @@
 import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import rehypeRaw from 'rehype-raw';
 import rehypeHighlight from 'rehype-highlight';
 import 'highlight.js/styles/github-dark.css';
 import { AlertTriangle, Info, CheckCircle2, ChevronRight, Copy, Check, ShieldAlert } from 'lucide-react';
 import { resolveApiUrl } from '../../../services/api';
+import { ImageLightboxModal } from './ImageLightboxModal';
 
 interface MarkdownRendererProps {
   content: string;
 }
 
+function getHeadingText(children: any): string {
+  if (!children) return '';
+  if (typeof children === 'string') return children;
+  if (Array.isArray(children)) return children.map(getHeadingText).join('');
+  if (typeof children === 'object' && children.props?.children) return getHeadingText(children.props.children);
+  return String(children);
+}
+
+export function slugifyHeading(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\w\s-]/g, '')
+    .trim()
+    .replace(/\s+/g, '-');
+}
+
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content }) => {
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
+  const [lightboxImage, setLightboxImage] = useState<{ url: string; title?: string } | null>(null);
 
   const handleCopy = (code: string) => {
     navigator.clipboard.writeText(code);
@@ -23,7 +44,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content }) =
     <div className="prose dark:prose-invert max-w-none text-foreground leading-relaxed min-w-0 break-words [overflow-wrap:anywhere]">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlight]}
+        rehypePlugins={[rehypeRaw, rehypeHighlight]}
         components={{
           table: ({ node, ...props }) => (
             <div className="overflow-x-auto my-5 rounded-xl border border-border bg-card shadow-sm scrollbar-thin">
@@ -34,7 +55,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content }) =
             <thead className="bg-muted/70 border-b border-border text-foreground font-semibold" {...props} />
           ),
           th: ({ node, ...props }) => (
-            <th className="px-4 py-3 text-xs font-bold uppercase tracking-wider text-muted-foreground whitespace-nowrap" {...props} />
+            <th className="px-4 py-3 text-xs font-semibold text-muted-foreground whitespace-nowrap" {...props} />
           ),
           tbody: ({ node, ...props }) => (
             <tbody className="divide-y divide-border/60" {...props} />
@@ -125,17 +146,34 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content }) =
               </code>
             );
           },
-          h2: ({ node, children, ...props }) => (
-            <h2 className="text-xl sm:text-2xl font-extrabold tracking-tight mt-8 mb-4 pb-2 border-b border-border flex items-center gap-2 text-foreground" {...props}>
-              <ChevronRight className="w-5 h-5 text-primary shrink-0" />
-              <span className="min-w-0 break-words flex-1">{children}</span>
-            </h2>
-          ),
-          h3: ({ node, children, ...props }) => (
-            <h3 className="text-base sm:text-lg font-bold mt-5 mb-2.5 text-foreground flex items-center gap-2 min-w-0" {...props}>
-              <span className="min-w-0 break-words flex-1">{children}</span>
-            </h3>
-          ),
+          h1: ({ node, children, ...props }) => {
+            const headingText = getHeadingText(children);
+            const headingId = slugifyHeading(headingText);
+            return (
+              <h1 id={headingId} className="text-2xl sm:text-3xl font-extrabold tracking-tight mt-6 mb-4 pb-2 border-b border-border text-foreground scroll-mt-20" {...props}>
+                {children}
+              </h1>
+            );
+          },
+          h2: ({ node, children, ...props }) => {
+            const headingText = getHeadingText(children);
+            const headingId = slugifyHeading(headingText);
+            return (
+              <h2 id={headingId} className="text-xl sm:text-2xl font-extrabold tracking-tight mt-8 mb-4 pb-2 border-b border-border flex items-center gap-2 text-foreground scroll-mt-20" {...props}>
+                <ChevronRight className="w-5 h-5 text-primary shrink-0" />
+                <span className="min-w-0 break-words flex-1">{children}</span>
+              </h2>
+            );
+          },
+          h3: ({ node, children, ...props }) => {
+            const headingText = getHeadingText(children);
+            const headingId = slugifyHeading(headingText);
+            return (
+              <h3 id={headingId} className="text-base sm:text-lg font-bold mt-5 mb-2.5 text-foreground flex items-center gap-2 min-w-0 scroll-mt-20" {...props}>
+                <span className="min-w-0 break-words flex-1">{children}</span>
+              </h3>
+            );
+          },
           ul: ({ node, ...props }) => <ul className="list-disc list-inside space-y-1.5 my-3 text-sm pl-2" {...props} />,
           ol: ({ node, ...props }) => <ol className="list-decimal list-inside space-y-1.5 my-3 text-sm pl-2" {...props} />,
           li: ({ node, ...props }) => <li className="leading-relaxed" {...props} />,
@@ -143,14 +181,27 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content }) =
           a: ({ node, ...props }) => (
             <a className="text-primary hover:underline font-semibold break-all" target="_blank" rel="noopener noreferrer" {...props} />
           ),
-          img: ({ node, src, ...props }) => (
-            <img 
-              src={resolveApiUrl(src || '')}
-              className="rounded-xl border border-border shadow-sm max-w-full h-auto my-4 hover:shadow-md transition-shadow object-contain" 
-              loading="lazy"
-              {...props} 
-            />
-          ),
+          img: ({ node, src, alt, width, style, ...props }: any) => {
+            const resolvedSrc = resolveApiUrl(src || '');
+            const imgWidth = width || style?.width;
+            const formattedWidth = imgWidth ? (/^\d+$/.test(String(imgWidth)) ? `${imgWidth}px` : String(imgWidth)) : undefined;
+            return (
+              <img 
+                src={resolvedSrc}
+                alt={alt || 'Hình ảnh'}
+                title={alt || 'Nhấp để xem ảnh phóng to'}
+                onClick={() => setLightboxImage({ url: resolvedSrc, title: alt || 'Hình ảnh tài liệu' })}
+                className="rounded-xl border border-border shadow-sm max-w-full h-auto my-4 hover:shadow-md transition-shadow object-contain cursor-zoom-in inline-block" 
+                style={{
+                  ...style,
+                  width: formattedWidth || style?.width,
+                  maxWidth: '100%'
+                }}
+                loading="lazy"
+                {...props} 
+              />
+            );
+          },
           input: ({ node, type, ...props }: any) => {
             if (type === 'checkbox') {
               return (
@@ -168,6 +219,16 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content }) =
       >
         {content}
       </ReactMarkdown>
+
+      {/* Lightbox for clicked markdown images */}
+      {lightboxImage && (
+        <ImageLightboxModal
+          isOpen={Boolean(lightboxImage)}
+          onClose={() => setLightboxImage(null)}
+          imageUrl={lightboxImage.url}
+          title={lightboxImage.title}
+        />
+      )}
     </div>
   );
 };

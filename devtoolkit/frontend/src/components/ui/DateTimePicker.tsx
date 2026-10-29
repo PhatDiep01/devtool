@@ -54,7 +54,30 @@ export const DateTimePicker: React.FC<DateTimePickerProps> = ({
   id,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
+  const [placement, setPlacement] = useState<'bottom' | 'top'>('bottom');
   const containerRef = useRef<HTMLDivElement>(null);
+
+  const updatePlacement = () => {
+    if (containerRef.current) {
+      const rect = containerRef.current.getBoundingClientRect();
+      const spaceBelow = window.innerHeight - rect.bottom;
+      const spaceAbove = rect.top;
+      // If space below is less than 400px and space above has more room, flip popover upwards
+      if (spaceBelow < 400 && spaceAbove > 300) {
+        setPlacement('top');
+      } else {
+        setPlacement('bottom');
+      }
+    }
+  };
+
+  const handleToggle = () => {
+    if (disabled) return;
+    if (!isOpen) {
+      updatePlacement();
+    }
+    setIsOpen(!isOpen);
+  };
 
   // Parse initial date
   const parsedDate = useMemo(() => {
@@ -201,7 +224,7 @@ export const DateTimePicker: React.FC<DateTimePickerProps> = ({
         id={id}
         type="button"
         disabled={disabled}
-        onClick={() => !disabled && setIsOpen(!isOpen)}
+        onClick={handleToggle}
         className={`w-full flex items-center justify-between gap-2 text-left bg-background border px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all select-none ${
           disabled
             ? 'opacity-50 cursor-not-allowed bg-muted/30 border-border'
@@ -244,10 +267,12 @@ export const DateTimePicker: React.FC<DateTimePickerProps> = ({
         </div>
       </button>
 
-      {/* Modern Popover Calendar */}
+      {/* Modern Popover Calendar with Smart Flipping (never stretches page) */}
       {isOpen && (
         <div
-          className="absolute left-0 z-50 mt-1.5 bg-card border border-border rounded-2xl shadow-2xl p-4 animate-in fade-in zoom-in-95 duration-150 w-[320px] sm:w-[340px]"
+          className={`absolute left-0 z-50 bg-card border border-border rounded-2xl shadow-2xl p-4 animate-in fade-in zoom-in-95 duration-150 w-[320px] sm:w-[340px] max-h-[min(500px,85vh)] overflow-y-auto ${
+            placement === 'top' ? 'bottom-full mb-2' : 'top-full mt-1.5'
+          }`}
         >
           {/* Quick Date Presets */}
           <div className="flex items-center gap-1.5 pb-3 border-b border-border/60 overflow-x-auto scrollbar-none">

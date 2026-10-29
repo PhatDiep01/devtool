@@ -402,15 +402,47 @@ Mô tả mục đích và vai trò của màn hình ${trimmedTitle}.
       JSON.stringify(parsed)
     );
 
+    const createdId = Number(info.lastInsertRowid);
+
+    // Auto-link any uploaded images referenced in the markdown content or passed via image_ids
+    try {
+      const imgRegex = /\/api\/files\/images\/([a-zA-Z0-9_\-\.]+)/g;
+      let match;
+      const foundFilenames: string[] = [];
+      while ((match = imgRegex.exec(markdownContent)) !== null) {
+        foundFilenames.push(match[1]);
+      }
+      if (foundFilenames.length > 0) {
+        const placeholders = foundFilenames.map(() => '?').join(',');
+        db.prepare(`UPDATE images SET screen_id = ? WHERE stored_name IN (${placeholders}) AND (screen_id IS NULL OR screen_id = 0)`).run(createdId, ...foundFilenames);
+      }
+      if (Array.isArray(req.body.image_ids) && req.body.image_ids.length > 0) {
+        const placeholders = req.body.image_ids.map(() => '?').join(',');
+        db.prepare(`UPDATE images SET screen_id = ? WHERE id IN (${placeholders})`).run(createdId, ...req.body.image_ids);
+      }
+    } catch {}
+
     const created: any = db.prepare(`
       SELECT s.*, m.name as module_name, m.slug as module_slug, m.icon as module_icon, m.color as module_color
       FROM screens s
       JOIN modules m ON s.module_id = m.id
       WHERE s.id = ?
-    `).get(info.lastInsertRowid);
+    `).get(createdId);
 
     created.tags = typeof created.tags === 'string' ? JSON.parse(created.tags) : created.tags;
     created.parsed_data = typeof created.parsed_data === 'string' ? JSON.parse(created.parsed_data) : created.parsed_data;
+
+    // Attach images
+    const screenImages: any[] = db.prepare(`
+      SELECT id, screen_id, original_name, stored_name, mime_type, size_bytes, created_at
+      FROM images
+      WHERE screen_id = ?
+      ORDER BY id DESC
+    `).all(createdId);
+    created.images = screenImages.map(img => ({
+      ...img,
+      url: `/api/files/images/${img.stored_name}`
+    }));
 
     res.status(201).json(created);
   } catch (error: any) {
@@ -464,6 +496,18 @@ router.get('/screens/:id', (req: Request, res: Response) => {
 
     screen.tags = typeof screen.tags === 'string' ? JSON.parse(screen.tags) : screen.tags;
     screen.parsed_data = typeof screen.parsed_data === 'string' ? JSON.parse(screen.parsed_data) : screen.parsed_data;
+
+    // Attach images
+    const screenImages: any[] = db.prepare(`
+      SELECT id, screen_id, original_name, stored_name, mime_type, size_bytes, created_at
+      FROM images
+      WHERE screen_id = ?
+      ORDER BY id DESC
+    `).all(id);
+    screen.images = screenImages.map(img => ({
+      ...img,
+      url: `/api/files/images/${img.stored_name}`
+    }));
 
     res.json(screen);
   } catch (error: any) {
@@ -598,6 +642,43 @@ router.put('/screens/:id', (req: Request, res: Response) => {
       WHERE id = ?
     `).run(targetModuleId, finalTitle, savedRelPath, finalAuthor, finalStatus, finalJira, tagsJson, overview, contentToSave, parsedDataJson, id);
 
+    // Auto-link any uploaded images referenced in the markdown content or passed via image_ids
+    try {
+      const imgRegex = /\/api\/files\/images\/([a-zA-Z0-9_\-\.]+)/g;
+      let match;
+      const foundFilenames: string[] = [];
+      while ((match = imgRegex.exec(contentToSave)) !== null) {
+        foundFilenames.push(match[1]);
+      }
+      if (foundFilenames.length > 0) {
+        const placeholders = foundFilenames.map(() => '?').join(',');
+        db.prepare(`UPDATE images SET screen_id = ? WHERE stored_name IN (${placeholders}) AND (screen_id IS NULL OR screen_id = 0)`).run(id, ...foundFilenames);
+      }
+      if (Array.isArray(req.body.image_ids) && req.body.image_ids.length > 0) {
+        const placeholders = req.body.image_ids.map(() => '?').join(',');
+        db.prepare(`UPDATE images SET screen_id = ? WHERE id IN (${placeholders})`).run(id, ...req.body.image_ids);
+      }
+
+      // Clean up orphaned images that were previously linked to this screen but were deleted
+      const previouslyLinked: any[] = db.prepare('SELECT id, stored_name FROM images WHERE screen_id = ?').all(id);
+      const remainingIds = new Set(Array.isArray(req.body.image_ids) ? req.body.image_ids.map(Number) : []);
+      const uploadDir = path.join(getDataDir(), 'images');
+
+      for (const oldImg of previouslyLinked) {
+        const inContent = contentToSave.includes(oldImg.stored_name);
+        if (!remainingIds.has(oldImg.id) && !inContent) {
+          const safeStoredName = path.basename(oldImg.stored_name);
+          const filePath = path.join(uploadDir, safeStoredName);
+          if (fs.existsSync(filePath)) {
+            try {
+              fs.unlinkSync(filePath);
+            } catch {}
+          }
+          db.prepare('DELETE FROM images WHERE id = ?').run(oldImg.id);
+        }
+      }
+    } catch {}
+
     const updated: any = db.prepare(`
       SELECT s.*, m.name as module_name, m.slug as module_slug, m.icon as module_icon, m.color as module_color
       FROM screens s
@@ -607,6 +688,18 @@ router.put('/screens/:id', (req: Request, res: Response) => {
 
     updated.tags = typeof updated.tags === 'string' ? JSON.parse(updated.tags) : updated.tags;
     updated.parsed_data = typeof updated.parsed_data === 'string' ? JSON.parse(updated.parsed_data) : updated.parsed_data;
+
+    // Attach images
+    const screenImages: any[] = db.prepare(`
+      SELECT id, screen_id, original_name, stored_name, mime_type, size_bytes, created_at
+      FROM images
+      WHERE screen_id = ?
+      ORDER BY id DESC
+    `).all(id);
+    updated.images = screenImages.map(img => ({
+      ...img,
+      url: `/api/files/images/${img.stored_name}`
+    }));
 
     res.json(updated);
   } catch (error: any) {
@@ -628,6 +721,10 @@ router.delete('/screens/:id', (req: Request, res: Response) => {
     } catch (e) {
       // File might already be removed
     }
+
+    try {
+      db.prepare('DELETE FROM images WHERE screen_id = ?').run(id);
+    } catch (e) {}
 
     db.prepare('DELETE FROM screens WHERE id = ?').run(id);
     res.json({ message: 'Screen deleted successfully' });
