@@ -2,6 +2,7 @@ import { marked } from 'marked';
 import TurndownService from 'turndown';
 // @ts-ignore
 import { gfm } from 'joplin-turndown-plugin-gfm';
+import { resolveApiUrl } from '../services/api';
 
 // Configure Marked for GFM tables, line breaks, etc.
 marked.setOptions({
@@ -39,14 +40,27 @@ turndownService.addRule('githubCallout', {
   }
 });
 
-// Custom rule for images to ensure clean markdown formatting
+// Custom rule for images to ensure clean markdown formatting with width preservation
 turndownService.addRule('cleanImages', {
   filter: 'img',
   replacement: (content, node) => {
     const img = node as HTMLImageElement;
     const alt = img.alt || 'Hình ảnh';
-    const src = img.getAttribute('src') || '';
+    const originalSrc = img.getAttribute('data-doc-src') || img.getAttribute('data-original-src');
+    let src = originalSrc || img.getAttribute('src') || '';
     if (!src) return '';
+
+    // Check if custom width is present
+    const widthAttr = img.getAttribute('width');
+    const styleWidth = img.style?.width;
+    const width = widthAttr || styleWidth;
+
+    if (width) {
+      const cleanWidth = width.replace(/px$/, '').trim();
+      if (cleanWidth && cleanWidth !== 'auto') {
+        return `<img src="${src}" alt="${alt}" width="${cleanWidth}" />`;
+      }
+    }
     return `![${alt}](${src})`;
   }
 });
@@ -57,11 +71,85 @@ turndownService.addRule('cleanImages', {
 export function markdownToHtml(markdown: string): string {
   if (!markdown || !markdown.trim()) return '';
   try {
-    return marked.parse(markdown) as string;
+    const rawHtml = marked.parse(markdown) as string;
+
+    // Process all <img> tags to resolve URLs and preserve width/styling
+    return rawHtml.replace(/<img\s+([^>]*?)>/gi, (fullMatch, attrs) => {
+      // Extract src
+      const srcMatch = attrs.match(/src=["']([^"']+)["']/i);
+      const src = srcMatch ? srcMatch[1] : '';
+      if (!src) return fullMatch;
+
+      const resolved = resolveApiUrl(src);
+
+      // Extract alt
+      const altMatch = attrs.match(/alt=["']([^"']*)["']/i);
+      const alt = altMatch ? altMatch[1] : 'Hình ảnh';
+
+      // Extract width
+      const widthMatch = attrs.match(/width=["']([^"']+)["']/i);
+      const width = widthMatch ? widthMatch[1].trim() : '';
+
+      // Build style
+      let styleStr = 'max-width: 100%;';
+      if (width) {
+        const formattedWidth = /^\d+$/.test(width) ? `${width}px` : width;
+        styleStr = `width: ${formattedWidth}; max-width: 100%;`;
+      }
+
+      const widthAttr = width ? ` width="${width.replace(/px$/, '')}"` : '';
+
+      return `<img src="${resolved}" data-doc-src="${src}" alt="${alt}"${widthAttr} style="${styleStr}" class="max-w-full rounded-xl my-3 border border-border shadow-xs inline-block cursor-pointer hover:ring-2 hover:ring-primary/40 transition-all" />`;
+    });
   } catch (err) {
     console.error('Error parsing markdown to HTML:', err);
     return markdown;
   }
+}
+
+/**
+ * Removes all markdown and HTML image references for a given image identifier
+ */
+export function removeImageFromMarkdown(
+  markdown: string,
+  imageIdentifier: string | { url?: string; stored_name?: string; original_name?: string; tempId?: string }
+): string {
+  if (!markdown) return '';
+
+  const tokens: string[] = [];
+  if (typeof imageIdentifier === 'string') {
+    if (imageIdentifier.trim()) tokens.push(imageIdentifier.trim());
+  } else if (imageIdentifier && typeof imageIdentifier === 'object') {
+    if (imageIdentifier.url) tokens.push(imageIdentifier.url);
+    if (imageIdentifier.stored_name) tokens.push(imageIdentifier.stored_name);
+    if (imageIdentifier.tempId) tokens.push(imageIdentifier.tempId);
+    if (imageIdentifier.original_name && imageIdentifier.original_name.length > 3) {
+      tokens.push(imageIdentifier.original_name);
+    }
+  }
+
+  let result = markdown;
+
+  for (const token of tokens) {
+    const safeToken = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    // 1. Remove markdown images: ![alt](...token...)
+    const mdImageRegex = new RegExp(`!\\[[^\\]]*\\]\\([^)]*?${safeToken}[^)]*?\\)`, 'gi');
+    result = result.replace(mdImageRegex, '');
+
+    // 2. Remove HTML image tags wrapped in paragraphs: <p>\s*<img ...token...>\s*</p>
+    const htmlPImgRegex = new RegExp(`<p>\\s*<img\\s+[^>]*?${safeToken}[^>]*?>\\s*<\\/p>`, 'gi');
+    result = result.replace(htmlPImgRegex, '');
+
+    // 3. Remove standalone HTML image tags: <img ...token...>
+    const htmlImgRegex = new RegExp(`<img\\s+[^>]*?${safeToken}[^>]*?\\/?>`, 'gi');
+    result = result.replace(htmlImgRegex, '');
+  }
+
+  return result
+    .replace(/<p>\s*<br\s*\/?>\s*<\/p>\s*<p>\s*<br\s*\/?>\s*<\/p>/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 /**

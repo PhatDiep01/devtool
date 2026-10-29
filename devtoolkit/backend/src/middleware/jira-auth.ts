@@ -5,12 +5,15 @@ import { adfToText } from '../services/jira-utils';
 
 export interface JiraSession {
   token: string;
+  username?: string;
   user_email: string;
   display_name: string;
   avatar_url?: string;
   base_url: string;
   api_token: string;
   auth_type?: 'basic' | 'bearer';
+  session_cookie?: string;
+  remember_me?: number;
   created_at: string;
   expires_at: string;
 }
@@ -52,7 +55,7 @@ export function getActiveJiraSession(req: Request): JiraSession | null {
 
     if (token) {
       const session: JiraSession | undefined = db.prepare(`
-        SELECT token, user_email, display_name, avatar_url, base_url, api_token, auth_type, created_at, expires_at
+        SELECT token, username, user_email, display_name, avatar_url, base_url, api_token, auth_type, session_cookie, remember_me, created_at, expires_at
         FROM jira_sessions
         WHERE token = ? AND datetime(expires_at) > datetime('now')
       `).get(token);
@@ -67,7 +70,7 @@ export function getActiveJiraSession(req: Request): JiraSession | null {
     // Fallback: If no token explicitly provided (e.g. browser <img> tag or media request),
     // resolve the most recently active non-expired session (excluding mock/test sessions)
     const latestSession: JiraSession | undefined = db.prepare(`
-      SELECT token, user_email, display_name, avatar_url, base_url, api_token, auth_type, created_at, expires_at
+      SELECT token, username, user_email, display_name, avatar_url, base_url, api_token, auth_type, session_cookie, remember_me, created_at, expires_at
       FROM jira_sessions
       WHERE datetime(expires_at) > datetime('now')
         AND base_url NOT LIKE '%company.atlassian.net%'
@@ -129,20 +132,38 @@ export function deepSanitizeForJiraServer(data: any): any {
  * Handles Jira Server / Data Center vs Cloud URL normalization seamlessly.
  */
 export function createJiraClientFromSession(session: JiraSession): AxiosInstance {
-  const isBearer = session.auth_type === 'bearer' || !session.user_email || session.api_token.startsWith('Bearer ');
+  const isJiraServer = !session.base_url.includes('.atlassian.net');
+  const isBearer = session.auth_type === 'bearer' || session.api_token.startsWith('Bearer ');
+
+  // Determine user identifier for Basic Auth:
+  // Jira Server / Data Center requires login Username (e.g. KhaiDPQ, phatdm, etc.)
+  // Jira Cloud requires email address (e.g. user@atlassian.net)
+  let userIdentifier = session.username;
+  if (!userIdentifier) {
+    if (isJiraServer && session.user_email && session.user_email.includes('@')) {
+      userIdentifier = session.user_email.split('@')[0];
+    } else {
+      userIdentifier = session.user_email;
+    }
+  }
+
   const authHeader = isBearer
     ? (session.api_token.startsWith('Bearer ') ? session.api_token : `Bearer ${session.api_token}`)
-    : `Basic ${Buffer.from(`${session.user_email}:${session.api_token}`).toString('base64')}`;
+    : `Basic ${Buffer.from(`${userIdentifier}:${session.api_token}`).toString('base64')}`;
 
-  const isJiraServer = !session.base_url.includes('.atlassian.net');
+  const headers: Record<string, string> = {
+    Authorization: authHeader,
+    Accept: 'application/json',
+    'Content-Type': 'application/json'
+  };
+
+  if (session.session_cookie) {
+    headers['Cookie'] = session.session_cookie;
+  }
 
   const client = axios.create({
     baseURL: session.base_url.replace(/\/+$/, ''),
-    headers: {
-      Authorization: authHeader,
-      Accept: 'application/json',
-      'Content-Type': 'application/json'
-    },
+    headers,
     timeout: 20000
   });
 

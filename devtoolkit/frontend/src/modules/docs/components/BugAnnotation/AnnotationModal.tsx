@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { 
   BugItem, 
@@ -24,18 +24,31 @@ import {
 } from 'lucide-react';
 import { bugAnnotationsApi, bugsApi, resolveApiUrl } from '../../../../services/api';
 import { useAnnotationEngine } from './useAnnotationEngine';
-import { AnnotationCanvas } from './AnnotationCanvas';
+import { AnnotationCanvas, AnnotationCanvasHandle } from './AnnotationCanvas';
 import { AnnotationToolbar } from './AnnotationToolbar';
 import { AnnotationSidebar } from './AnnotationSidebar';
 import { AnnotationShortcutsModal } from './AnnotationShortcutsModal';
 import { compositeImageWithAnnotations, generateMarkdownSummary } from './mathUtils';
 import { toast } from 'react-hot-toast';
 
+export interface AnnotationModalImageItem {
+  id: string;
+  url: string;
+  originalName: string;
+  annotations?: AnnotationItem[];
+  isPending?: boolean;
+}
+
 export interface AnnotationModalProps {
   isOpen: boolean;
   onClose: () => void;
-  bug: BugItem;
+  bug?: BugItem | null;
   initialImageId?: string;
+  customImages?: AnnotationModalImageItem[];
+  customTitle?: string;
+  customUsKey?: string;
+  onSaveFormAnnotations?: (imageId: string, annotations: AnnotationItem[]) => void;
+  onAddDraftImage?: (file: File) => void;
   onAnnotationsUpdated?: (bugId: number) => void;
 }
 
@@ -44,12 +57,30 @@ export const AnnotationModal: React.FC<AnnotationModalProps> = ({
   onClose,
   bug,
   initialImageId,
+  customImages,
+  customTitle,
+  customUsKey,
+  onSaveFormAnnotations,
+  onAddDraftImage,
   onAnnotationsUpdated,
 }) => {
-  // Filter all image attachments from bug
-  const imageAttachments = useMemo(() => {
-    return (bug.attachments || []).filter((a) => a.isImage || /\.(png|jpe?g|gif|webp|svg)$/i.test(a.url || a.filename || ''));
-  }, [bug.attachments]);
+  // Filter all image attachments from bug or use provided customImages
+  const imageAttachments: AnnotationModalImageItem[] = useMemo(() => {
+    if (customImages && customImages.length > 0) {
+      return customImages;
+    }
+    if (bug?.attachments) {
+      return (bug.attachments || [])
+        .filter((a) => a.isImage || /\.(png|jpe?g|gif|webp|svg)$/i.test(a.url || a.filename || ''))
+        .map((a) => ({
+          id: a.id || a.filename,
+          url: a.url,
+          originalName: a.originalName,
+          annotations: bug.annotations?.[a.id || a.filename]?.annotations || []
+        }));
+    }
+    return [];
+  }, [customImages, bug?.attachments, bug?.annotations]);
 
   const [currentImageIndex, setCurrentImageIndex] = useState<number>(0);
   const [currentVersion, setCurrentVersion] = useState<number>(0);
@@ -60,52 +91,72 @@ export const AnnotationModal: React.FC<AnnotationModalProps> = ({
     serverVersion: number;
     serverAnnotations: AnnotationItem[];
   } | null>(null);
+  const [isMobileDrawerOpen, setIsMobileDrawerOpen] = useState(false);
+  const canvasRef = useRef<AnnotationCanvasHandle>(null);
 
   // Set initial selected image
   useEffect(() => {
     if (initialImageId && imageAttachments.length > 0) {
-      const idx = imageAttachments.findIndex((img) => (img.id || img.filename) === initialImageId);
+      const idx = imageAttachments.findIndex((img) => img.id === initialImageId);
       if (idx !== -1) {
         setCurrentImageIndex(idx);
       }
     }
   }, [initialImageId, imageAttachments]);
 
-  const currentImage: BugAttachment | undefined = imageAttachments[currentImageIndex];
-  const currentImageId = currentImage ? (currentImage.id || currentImage.filename) : '';
+  const currentImage: AnnotationModalImageItem | undefined = imageAttachments[currentImageIndex];
+  const currentImageId = currentImage ? currentImage.id : '';
+  const displayTitle = customTitle || bug?.title || 'Đánh dấu hình ảnh';
+  const displayUsKey = customUsKey || bug?.us_key;
+  const isDraftMode = !bug?.id || Boolean(onSaveFormAnnotations);
 
   // Auto-save handler sent to useAnnotationEngine
   const handleAutoSave = useCallback(async (savedItems: AnnotationItem[]) => {
-    if (!bug.id || !currentImageId) return;
-    try {
-      const res = await bugAnnotationsApi.save(bug.id, currentImageId, {
-        annotations: savedItems,
-        version: currentVersion
-      });
-      if (res.data && res.data.version) {
-        setCurrentVersion(res.data.version);
-      }
-      setConflictData(null);
-      onAnnotationsUpdated?.(bug.id);
-    } catch (err: any) {
-      if (err.response?.status === 409) {
-        toast.error('Có xung đột phiên bản: Dữ liệu đã được cập nhật từ phiên khác');
-        if (err.response?.data?.data) {
-          setConflictData({
-            serverVersion: err.response.data.currentVersion || 1,
-            serverAnnotations: err.response.data.data.annotations || []
-          });
-        }
-      } else {
-        toast.error('Lỗi khi tự động lưu đánh dấu');
-      }
-      throw err;
+    if (!currentImageId) return;
+
+    // In draft mode or when form save callback is provided:
+    if (isDraftMode || onSaveFormAnnotations) {
+      onSaveFormAnnotations?.(currentImageId, savedItems);
+      return;
     }
-  }, [bug.id, currentImageId, currentVersion, onAnnotationsUpdated]);
+
+    if (bug?.id) {
+      try {
+        const res = await bugAnnotationsApi.save(bug.id, currentImageId, {
+          annotations: savedItems,
+          version: currentVersion
+        });
+        if (res.data && res.data.version) {
+          setCurrentVersion(res.data.version);
+        }
+        setConflictData(null);
+        onAnnotationsUpdated?.(bug.id);
+      } catch (err: any) {
+        if (err.response?.status === 409) {
+          toast.error('Có xung đột phiên bản: Dữ liệu đã được cập nhật từ phiên khác');
+          if (err.response?.data?.data) {
+            setConflictData({
+              serverVersion: err.response.data.currentVersion || 1,
+              serverAnnotations: err.response.data.data.annotations || []
+            });
+          }
+        } else {
+          toast.error('Lỗi khi tự động lưu đánh dấu');
+        }
+        throw err;
+      }
+    }
+  }, [isDraftMode, bug?.id, currentImageId, currentVersion, onSaveFormAnnotations, onAnnotationsUpdated]);
 
   // Force overwrite in case of concurrency conflict
   const handleForceSave = async () => {
-    if (!bug.id || !currentImageId) return;
+    if (!currentImageId) return;
+    if (isDraftMode || onSaveFormAnnotations) {
+      onSaveFormAnnotations?.(currentImageId, engine.annotations);
+      toast.success('Đã lưu điểm đánh dấu');
+      return;
+    }
+    if (!bug?.id) return;
     try {
       const res = await bugAnnotationsApi.save(bug.id, currentImageId, {
         annotations: engine.annotations,
@@ -135,23 +186,32 @@ export const AnnotationModal: React.FC<AnnotationModalProps> = ({
       toast.error('Chỉ hỗ trợ tải lên file hình ảnh');
       return;
     }
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-      const res = await bugsApi.upload(formData);
-      const newAtt = res.data;
 
-      const updatedAttachments = [...(bug.attachments || []), newAtt];
-      await bugsApi.update(bug.id, { attachments: updatedAttachments });
-      bug.attachments = updatedAttachments;
-      onAnnotationsUpdated?.(bug.id);
+    if (isDraftMode && onAddDraftImage) {
+      onAddDraftImage(file);
+      toast.success('Đã thêm ảnh vào form (chờ lưu)');
+      return;
+    }
 
-      const newIdx = updatedAttachments.filter((a) => a.isImage || /\.(png|jpe?g|gif|webp|svg)$/i.test(a.url || a.filename || '')).length - 1;
-      setCurrentImageIndex(Math.max(0, newIdx));
-      toast.success('Đã thêm ảnh mới từ clipboard/kéo thả vào bug!');
-    } catch (err: any) {
-      console.error('Failed to attach pasted image:', err);
-      toast.error('Không thể thêm ảnh: ' + (err.message || 'Lỗi'));
+    if (bug?.id) {
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
+        const res = await bugsApi.upload(formData);
+        const newAtt = res.data;
+
+        const updatedAttachments = [...(bug.attachments || []), newAtt];
+        await bugsApi.update(bug.id, { attachments: updatedAttachments });
+        bug.attachments = updatedAttachments;
+        onAnnotationsUpdated?.(bug.id);
+
+        const newIdx = updatedAttachments.filter((a) => a.isImage || /\.(png|jpe?g|gif|webp|svg)$/i.test(a.url || a.filename || '')).length - 1;
+        setCurrentImageIndex(Math.max(0, newIdx));
+        toast.success('Đã thêm ảnh mới từ clipboard/kéo thả vào bug!');
+      } catch (err: any) {
+        console.error('Failed to attach pasted image:', err);
+        toast.error('Không thể thêm ảnh: ' + (err.message || 'Lỗi'));
+      }
     }
   };
 
@@ -179,7 +239,7 @@ export const AnnotationModal: React.FC<AnnotationModalProps> = ({
 
     window.addEventListener('paste', handleWindowPaste);
     return () => window.removeEventListener('paste', handleWindowPaste);
-  }, [isOpen, bug]);
+  }, [isOpen, bug, isDraftMode]);
 
   const engine = useAnnotationEngine({
     initialAnnotations: [],
@@ -187,35 +247,56 @@ export const AnnotationModal: React.FC<AnnotationModalProps> = ({
     autoSaveDelay: 1000
   });
 
-  // Load annotations from API when image changes
+  // Load annotations when image changes
   useEffect(() => {
-    if (!isOpen || !bug.id || !currentImageId) return;
+    if (!isOpen || !currentImage) return;
 
-    let isMounted = true;
-    setInitialLoading(true);
+    // 1. If custom draft annotations are available on currentImage
+    if (currentImage.annotations !== undefined) {
+      engine.resetWithAnnotations(currentImage.annotations);
+      setInitialLoading(false);
+      return;
+    }
 
-    bugAnnotationsApi.getByImage(bug.id, currentImageId)
-      .then((res) => {
-        if (!isMounted) return;
-        const record = res.data;
-        const loadedAnnotations = Array.isArray(record.annotations) ? record.annotations : [];
-        engine.resetWithAnnotations(loadedAnnotations);
-        setCurrentVersion(record.version || 0);
-      })
-      .catch((err) => {
-        console.error('Failed to load image annotations:', err);
-        if (isMounted) {
-          engine.resetWithAnnotations([]);
-        }
-      })
-      .finally(() => {
-        if (isMounted) setInitialLoading(false);
-      });
+    // 2. If persisted on server with bug id
+    if (bug?.id && currentImageId) {
+      let isMounted = true;
+      setInitialLoading(true);
 
-    return () => {
-      isMounted = false;
-    };
-  }, [isOpen, bug.id, currentImageId]);
+      bugAnnotationsApi.getByImage(bug.id, currentImageId)
+        .then((res) => {
+          if (!isMounted) return;
+          const record = res.data;
+          const loadedAnnotations = Array.isArray(record.annotations) ? record.annotations : [];
+          engine.resetWithAnnotations(loadedAnnotations);
+          setCurrentVersion(record.version || 0);
+        })
+        .catch((err) => {
+          console.error('Failed to load image annotations:', err);
+          if (isMounted) {
+            engine.resetWithAnnotations([]);
+          }
+        })
+        .finally(() => {
+          if (isMounted) setInitialLoading(false);
+        });
+
+      return () => {
+        isMounted = false;
+      };
+    } else {
+      engine.resetWithAnnotations([]);
+      setInitialLoading(false);
+    }
+  }, [isOpen, bug?.id, currentImageId, currentImage]);
+
+  const handleFitToScreen = useCallback(() => {
+    if (canvasRef.current) {
+      canvasRef.current.fitToScreen();
+    } else {
+      engine.fitToScreen();
+    }
+  }, [engine]);
 
   // Global Keyboard shortcuts handler
   useEffect(() => {
@@ -271,13 +352,13 @@ export const AnnotationModal: React.FC<AnnotationModalProps> = ({
       else if (key === '+' || key === '=') engine.zoomIn();
       else if (key === '-') engine.zoomOut();
       else if (key === '0') engine.resetZoom();
-      else if (key === 'f') engine.fitToScreen();
+      else if (key === 'f') handleFitToScreen();
       else if (key === '?') setIsShortcutsModalOpen(true);
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, engine]);
+  }, [isOpen, engine, handleFitToScreen]);
 
   // Handle Export PNG
   const handleExportPng = async () => {
@@ -289,7 +370,7 @@ export const AnnotationModal: React.FC<AnnotationModalProps> = ({
       const link = document.createElement('a');
       link.href = URL.createObjectURL(blob);
       const baseName = currentImage.originalName.replace(/\.[^/.]+$/, '');
-      link.download = `annotation_bug_${bug.id}_${baseName}.png`;
+      link.download = `annotation_${bug?.id ? `bug_${bug.id}_` : ''}${baseName}.png`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -303,20 +384,39 @@ export const AnnotationModal: React.FC<AnnotationModalProps> = ({
     }
   };
 
-  // Handle Copy Merged Image to Clipboard
+  // Handle Copy Merged Image to Clipboard with iOS Safari fallback
   const handleCopyImage = async () => {
     if (!currentImage) return;
     try {
       setIsExporting(true);
       const fullUrl = resolveApiUrl(currentImage.url);
       const blob = await compositeImageWithAnnotations(fullUrl, engine.annotations);
+      
+      let copied = false;
       if (navigator.clipboard && typeof ClipboardItem !== 'undefined') {
-        await navigator.clipboard.write([
-          new ClipboardItem({ 'image/png': blob })
-        ]);
-        toast.success('Đã sao chép ảnh có đánh dấu vào Clipboard');
-      } else {
-        toast.error('Trình duyệt không hỗ trợ sao chép ảnh vào Clipboard');
+        try {
+          await navigator.clipboard.write([
+            new ClipboardItem({ 'image/png': blob })
+          ]);
+          toast.success('Đã sao chép ảnh có đánh dấu vào Clipboard');
+          copied = true;
+        } catch (clipErr) {
+          console.warn('Direct clipboard write failed (iOS/Permissions fallback):', clipErr);
+        }
+      }
+
+      if (!copied) {
+        // Fallback for iOS Safari or restricted permissions: auto-download
+        const blobUrl = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = blobUrl;
+        const baseName = currentImage.originalName.replace(/\.[^/.]+$/, '');
+        link.download = `annotation_${bug?.id ? `bug_${bug.id}_` : ''}${baseName}.png`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+        toast('Trình duyệt chặn ghi clipboard: Đã tự động tải ảnh về máy', { icon: '📥' });
       }
     } catch (err: any) {
       console.error('Copy image failed:', err);
@@ -330,8 +430,8 @@ export const AnnotationModal: React.FC<AnnotationModalProps> = ({
   const handleCopyMarkdown = () => {
     if (!currentImage) return;
     const md = generateMarkdownSummary(
-      bug.title,
-      bug.us_key,
+      displayTitle,
+      displayUsKey,
       currentImage.originalName,
       engine.annotations
     );
@@ -357,26 +457,32 @@ export const AnnotationModal: React.FC<AnnotationModalProps> = ({
       tabIndex={0}
     >
       {/* 1. TOP HEADER BAR */}
-      <header className="h-14 border-b border-border/80 bg-card/95 px-4 flex items-center justify-between text-foreground shrink-0 z-20">
+      <header className="h-12 sm:h-14 border-b border-border/80 bg-card/95 px-2.5 sm:px-4 flex items-center justify-between text-foreground shrink-0 z-20">
         {/* Left: Bug Info & Title */}
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="p-2 rounded-xl bg-primary/10 text-primary shrink-0">
-            <Sparkles className="w-5 h-5" />
+        <div className="flex items-center gap-1.5 sm:gap-3 min-w-0 flex-1 mr-1.5">
+          <div className="p-1.5 sm:p-2 rounded-xl bg-primary/10 text-primary shrink-0">
+            <Sparkles className="w-4 h-4 sm:w-5 sm:h-5" />
           </div>
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="font-mono text-xs font-bold text-muted-foreground">Bug #{bug.id}</span>
-              {bug.us_key && (
-                <span className="font-mono text-xs font-bold text-blue-600 dark:text-blue-400 bg-blue-500/10 px-1.5 py-0.5 rounded">
-                  {bug.us_key}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5 sm:gap-2">
+              {bug?.id ? (
+                <span className="font-mono text-[10px] sm:text-xs font-bold text-muted-foreground shrink-0">Bug #{bug.id}</span>
+              ) : (
+                <span className="font-mono text-[10px] sm:text-xs font-bold text-amber-500 bg-amber-500/10 px-1.5 py-0.5 rounded shrink-0">
+                  Bản nháp
                 </span>
               )}
-              <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-primary/10 text-primary">
+              {displayUsKey && (
+                <span className="font-mono text-[10px] sm:text-xs font-bold text-blue-600 dark:text-blue-400 bg-blue-500/10 px-1.5 py-0.5 rounded shrink-0">
+                  {displayUsKey}
+                </span>
+              )}
+              <span className="hidden sm:inline-flex text-xs font-bold px-2 py-0.5 rounded-full bg-primary/10 text-primary shrink-0">
                 Trình Đánh Dấu Ảnh
               </span>
             </div>
-            <h2 className="text-sm font-bold text-foreground truncate max-w-md sm:max-w-xl" title={bug.title}>
-              {bug.title}
+            <h2 className="text-xs sm:text-sm font-bold text-foreground truncate max-w-full" title={displayTitle}>
+              {displayTitle}
             </h2>
           </div>
         </div>
@@ -409,13 +515,13 @@ export const AnnotationModal: React.FC<AnnotationModalProps> = ({
         )}
 
         {/* Right: Actions & Close */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1 sm:gap-2 shrink-0">
           {/* Export PNG */}
           <button
             type="button"
             onClick={handleExportPng}
             disabled={isExporting}
-            className="px-3 py-1.5 rounded-xl bg-muted hover:bg-accent text-foreground text-xs font-semibold flex items-center gap-1.5 transition shadow-xs"
+            className="p-1.5 sm:px-3 sm:py-1.5 rounded-xl bg-muted hover:bg-accent text-foreground text-xs font-semibold flex items-center gap-1.5 transition shadow-xs"
             title="Xuất ảnh PNG kèm điểm đánh dấu"
           >
             <Download className="w-4 h-4" />
@@ -427,7 +533,7 @@ export const AnnotationModal: React.FC<AnnotationModalProps> = ({
             type="button"
             onClick={handleCopyImage}
             disabled={isExporting}
-            className="px-3 py-1.5 rounded-xl bg-muted hover:bg-accent text-foreground text-xs font-semibold flex items-center gap-1.5 transition shadow-xs"
+            className="p-1.5 sm:px-3 sm:py-1.5 rounded-xl bg-muted hover:bg-accent text-foreground text-xs font-semibold flex items-center gap-1.5 transition shadow-xs"
             title="Sao chép ảnh vào Clipboard để dán nhanh vào Jira / Chat"
           >
             <Share2 className="w-4 h-4" />
@@ -437,8 +543,16 @@ export const AnnotationModal: React.FC<AnnotationModalProps> = ({
           {/* Save Now Button */}
           <button
             type="button"
-            onClick={() => engine.saveNow().then(() => toast.success('Đã lưu đánh dấu'))}
-            className="px-3 py-1.5 rounded-xl bg-primary text-primary-foreground text-xs font-bold flex items-center gap-1.5 hover:opacity-90 transition shadow-sm"
+            onClick={async () => {
+              await engine.saveNow();
+              if (isDraftMode || onSaveFormAnnotations) {
+                onSaveFormAnnotations?.(currentImageId, engine.annotations);
+                toast.success('Đã lưu điểm đánh dấu cho ảnh này');
+              } else {
+                toast.success('Đã lưu đánh dấu');
+              }
+            }}
+            className="p-1.5 sm:px-3 sm:py-1.5 rounded-xl bg-primary text-primary-foreground text-xs font-bold flex items-center gap-1.5 hover:opacity-90 transition shadow-sm"
             title="Lưu đánh dấu ngay (Ctrl + S)"
           >
             <Save className="w-4 h-4" />
@@ -448,8 +562,18 @@ export const AnnotationModal: React.FC<AnnotationModalProps> = ({
           {/* Close button */}
           <button
             type="button"
-            onClick={onClose}
-            className="p-2 rounded-xl bg-muted hover:bg-accent text-muted-foreground hover:text-foreground transition ml-1"
+            onClick={async () => {
+              if (engine.saveStatus === 'dirty') {
+                try {
+                  await engine.saveNow();
+                  if (isDraftMode || onSaveFormAnnotations) {
+                    onSaveFormAnnotations?.(currentImageId, engine.annotations);
+                  }
+                } catch {}
+              }
+              onClose();
+            }}
+            className="p-1.5 sm:p-2 rounded-xl bg-muted hover:bg-accent text-muted-foreground hover:text-foreground transition ml-0.5 sm:ml-1"
             title="Đóng trình đánh dấu"
           >
             <X className="w-5 h-5" />
@@ -475,13 +599,13 @@ export const AnnotationModal: React.FC<AnnotationModalProps> = ({
         onZoomIn={engine.zoomIn}
         onZoomOut={engine.zoomOut}
         onResetZoom={engine.resetZoom}
-        onFitToScreen={engine.fitToScreen}
+        onFitToScreen={handleFitToScreen}
         onToggleShortcutsModal={() => setIsShortcutsModalOpen(true)}
       />
 
       {/* 3. MAIN WORKSPACE (CANVAS + SIDEBAR) */}
       <div className="flex-1 flex overflow-hidden relative">
-        {/* Center: Canvas Viewport */}
+        {/* Center: Canvas Viewport (100% width on mobile) */}
         <main 
           className="flex-1 h-full relative overflow-hidden bg-slate-950/90"
           onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
@@ -525,6 +649,7 @@ export const AnnotationModal: React.FC<AnnotationModalProps> = ({
             </div>
           ) : currentImage ? (
             <AnnotationCanvas
+              ref={canvasRef}
               imageSrc={resolveApiUrl(currentImage.url)}
               imageAlt={currentImage.originalName}
               annotations={engine.annotations}
@@ -566,29 +691,86 @@ export const AnnotationModal: React.FC<AnnotationModalProps> = ({
             </div>
           )}
 
-          {/* Floating Onboarding Guide Hint when empty */}
+          {/* Floating Onboarding Guide Hint when empty: single line nowrap, centered, elevated above mobile pill */}
           {!initialLoading && currentImage && engine.annotations.length === 0 && (
-            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 px-4 py-2 rounded-2xl bg-card/90 backdrop-blur border border-primary/40 shadow-xl text-xs font-medium text-foreground flex items-center gap-2 pointer-events-none animate-bounce">
+            <div className="absolute bottom-16 sm:bottom-4 left-1/2 -translate-x-1/2 px-3.5 py-2 rounded-2xl bg-card/95 backdrop-blur border border-primary/40 shadow-xl text-xs font-medium text-foreground flex items-center gap-2 pointer-events-none whitespace-nowrap max-w-[85vw] overflow-hidden text-ellipsis animate-bounce z-20">
               <Sparkles className="w-4 h-4 text-primary shrink-0" />
-              <span>Nhấp hoặc kéo chuột trên ảnh để vẽ khoanh vùng điểm lỗi</span>
+              <span className="truncate">Nhấp hoặc kéo trên ảnh để vẽ điểm lỗi</span>
             </div>
           )}
+
+          {/* Floating Pill Button for Mobile Bottom Sheet / Drawer */}
+          <button
+            type="button"
+            onClick={() => setIsMobileDrawerOpen(true)}
+            className="lg:hidden absolute bottom-4 right-4 z-30 px-3.5 py-2 rounded-full bg-card/95 hover:bg-card text-foreground border border-border shadow-xl backdrop-blur-md flex items-center gap-1.5 text-xs font-bold transition hover:scale-105 active:scale-95"
+            title="Xem danh sách ghi chú đánh dấu"
+          >
+            <span>📝</span>
+            <span>Ghi chú ({engine.annotations.length})</span>
+            {engine.annotations.some(a => a.status === 'open') && (
+              <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+            )}
+          </button>
         </main>
 
-        {/* Right: Sidebar List of Annotations */}
-        <AnnotationSidebar
-          annotations={engine.annotations}
-          selectedId={engine.selectedId}
-          onSelect={engine.setSelectedId}
-          onUpdate={engine.updateAnnotation}
-          onDelete={engine.deleteAnnotation}
-          onCopyMarkdown={handleCopyMarkdown}
-        />
+        {/* Right: Sidebar List of Annotations (Desktop: >= 1024px) */}
+        <div className="hidden lg:flex h-full shrink-0">
+          <AnnotationSidebar
+            annotations={engine.annotations}
+            selectedId={engine.selectedId}
+            onSelect={engine.setSelectedId}
+            onUpdate={engine.updateAnnotation}
+            onDelete={engine.deleteAnnotation}
+            onCopyMarkdown={handleCopyMarkdown}
+          />
+        </div>
+
+        {/* Mobile Collapsible Bottom Sheet / Drawer (< 1024px) */}
+        {isMobileDrawerOpen && (
+          <div className="lg:hidden fixed inset-0 z-50 flex flex-col justify-end">
+            {/* Backdrop */}
+            <div 
+              className="fixed inset-0 bg-black/60 backdrop-blur-xs animate-in fade-in duration-200"
+              onClick={() => setIsMobileDrawerOpen(false)}
+            />
+            {/* Bottom Sheet Card */}
+            <div 
+              className="relative z-50 bg-card border-t border-border rounded-t-2xl max-h-[75vh] flex flex-col shadow-2xl animate-in slide-in-from-bottom duration-200"
+              style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom, 0px))' }}
+            >
+              {/* Grab bar */}
+              <div 
+                className="w-full pt-2.5 pb-1 flex justify-center cursor-pointer" 
+                onClick={() => setIsMobileDrawerOpen(false)}
+              >
+                <div className="w-10 h-1 rounded-full bg-muted-foreground/30" />
+              </div>
+              <div className="flex-1 overflow-hidden">
+                <AnnotationSidebar
+                  annotations={engine.annotations}
+                  selectedId={engine.selectedId}
+                  onSelect={(id) => {
+                    engine.setSelectedId(id);
+                  }}
+                  onUpdate={engine.updateAnnotation}
+                  onDelete={engine.deleteAnnotation}
+                  onCopyMarkdown={handleCopyMarkdown}
+                  isMobileDrawer={true}
+                  onClose={() => setIsMobileDrawerOpen(false)}
+                />
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 4. BOTTOM THUMBNAIL CAROUSEL IF MULTIPLE IMAGES */}
       {imageAttachments.length > 1 && (
-        <footer className="h-16 border-t border-border/80 bg-card/90 px-4 flex items-center gap-2 overflow-x-auto shrink-0 z-20">
+        <footer 
+          className="h-16 border-t border-border/80 bg-card/90 px-3 sm:px-4 flex items-center gap-2 overflow-x-auto scrollbar-none touch-pan-x shrink-0 z-20"
+          style={{ paddingBottom: 'max(0.25rem, env(safe-area-inset-bottom, 0px))' }}
+        >
           <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider shrink-0 mr-2">
             Danh sách ảnh ({imageAttachments.length}):
           </span>

@@ -19,6 +19,7 @@ import bugsRoutes from './routes/bugs.routes';
 import jiraRoutes from './routes/jira.routes';
 import settingsRoutes from './routes/settings.routes';
 import stickyNotesRoutes from './routes/sticky-notes.routes';
+import apiDocsRoutes from './routes/api-docs.routes';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -48,12 +49,41 @@ const allowedOrigin = process.env.ALLOWED_ORIGIN || '*';
 app.use(cors({
   origin: allowedOrigin === '*' ? '*' : allowedOrigin.split(',').map(o => o.trim()),
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-jira-token']
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-jira-token'],
+  exposedHeaders: ['X-App-Build-Id', 'X-App-Version']
 }));
 
 app.use(morgan('dev'));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// Locate frontend dist directory early so all routes and static servers can use it
+const candidateDistPaths = [
+  path.resolve(__dirname, '../../frontend/dist'),
+  path.resolve(process.cwd(), '../frontend/dist'),
+  path.resolve(process.cwd(), 'frontend/dist')
+];
+
+let frontendDist: string | null = null;
+for (const p of candidateDistPaths) {
+  if (fs.existsSync(p)) {
+    frontendDist = p;
+    break;
+  }
+}
+
+// Attach release build id & version headers to all API responses
+app.use((req, res, next) => {
+  try {
+    const versionPath = frontendDist ? path.join(frontendDist, 'version.json') : null;
+    if (versionPath && fs.existsSync(versionPath)) {
+      const vData = JSON.parse(fs.readFileSync(versionPath, 'utf8'));
+      if (vData.buildId) res.setHeader('X-App-Build-Id', vData.buildId);
+      if (vData.version) res.setHeader('X-App-Version', vData.version);
+    }
+  } catch {}
+  next();
+});
 
 // Static images serving with security headers
 app.use('/api/files/images', (req, res, next) => {
@@ -70,6 +100,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/docs', docsRoutes);
 app.use('/api/files', filesRoutes);
 app.use('/api/bugs', bugsRoutes);
+app.use('/api/api-docs', apiDocsRoutes);
 app.use('/api/sticky-notes', stickyNotesRoutes);
 
 // Jira routes (authentication strictly enforced by jiraAuthMiddleware inside router)
@@ -78,25 +109,34 @@ app.use('/api/jira', jiraRoutes);
 // Settings routes
 app.use('/api/settings', settingsRoutes);
 
-// Frontend static assets serving (production / unified mode)
-const candidateDistPaths = [
-  path.resolve(__dirname, '../../frontend/dist'),
-  path.resolve(process.cwd(), '../frontend/dist'),
-  path.resolve(process.cwd(), 'frontend/dist')
-];
-
-let frontendDist: string | null = null;
-for (const p of candidateDistPaths) {
-  if (fs.existsSync(p)) {
-    frontendDist = p;
-    break;
-  }
-}
-
 if (frontendDist) {
-  app.use(express.static(frontendDist));
+  // Never cache index.html or version.json so browsers always receive the latest release
+  app.use((req, res, next) => {
+    if (req.path === '/' || req.path === '/index.html' || req.path === '/version.json') {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+    }
+    next();
+  });
+
+  app.use(express.static(frontendDist, {
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('index.html') || filePath.endsWith('version.json')) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+      } else if (filePath.match(/\.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2)$/)) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      }
+    }
+  }));
+
   app.get('*', (req, res, next) => {
     if (req.path.startsWith('/api/')) return next();
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     res.sendFile(path.join(frontendDist!, 'index.html'));
   });
 }

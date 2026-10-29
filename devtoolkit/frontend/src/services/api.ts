@@ -2,6 +2,7 @@ import axios from 'axios';
 import type { 
   Module, 
   Screen, 
+  ScreenImage,
   DashboardStats, 
   SearchResult, 
   JiraBoard, 
@@ -22,6 +23,7 @@ import type {
   JiraCreateWorklogPayload,
   JiraAssignedSubtask,
   WeeklyCalendarResponse,
+  ActivityStreamResponse,
   BugItem,
   BugListResponse,
   BugAttachment,
@@ -30,8 +32,13 @@ import type {
   StickyNote,
   StickyNoteListResponse,
   StickyNoteCreatePayload,
-  StickyNoteUpdatePayload
+  StickyNoteUpdatePayload,
+  ApiEndpoint,
+  ApiModel,
+  ApiErrorCode,
+  ApiEnvironment
 } from '@/types';
+import { useAppUpdateStore } from '../stores/app-update.store';
 
 /**
  * Checks if the frontend is currently running on the same host/origin as the backend Express server.
@@ -182,6 +189,17 @@ api.interceptors.request.use((config) => {
 
 api.interceptors.response.use(
   (response) => {
+    // Check if backend returned newer build id header
+    const remoteBuildId = response.headers?.['x-app-build-id'];
+    if (remoteBuildId && typeof window !== 'undefined') {
+      try {
+        const current = useAppUpdateStore.getState().currentBuild;
+        if (current && current.buildId !== remoteBuildId) {
+          useAppUpdateStore.getState().checkForUpdates();
+        }
+      } catch {}
+    }
+
     // Detect SPA fallback HTML response when calling API endpoints
     const contentType = String(response.headers?.['content-type'] || '').toLowerCase();
     const isApiUrl = Boolean(response.config?.url && response.config.url.includes('/api/'));
@@ -239,12 +257,13 @@ export const docsApi = {
     jira_key?: string;
     tags?: string[];
     raw_content?: string;
+    image_ids?: number[];
   }) => api.post<Screen>('/api/docs/screens', data),
   importScreen: (formData: FormData) =>
     api.post<Screen>('/api/docs/screens/import', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     }),
-  updateScreen: (id: number, data: Partial<Screen> & { moduleId?: number }) => 
+  updateScreen: (id: number, data: Partial<Screen> & { moduleId?: number; image_ids?: number[] }) => 
     api.put<Screen>(`/api/docs/screens/${id}`, data),
   deleteScreen: (id: number) => api.delete(`/api/docs/screens/${id}`),
   search: (q: string) => api.get<SearchResult[]>('/api/docs/search', { params: { q } }),
@@ -257,7 +276,10 @@ export const jiraAuthApi = {
   getSession: () => api.get<{ authenticated: boolean; user?: JiraUser }>('/api/jira/auth/session'),
   logout: () => api.post<{ success: boolean; message: string }>('/api/jira/auth/logout'),
   getConfigInfo: () => api.get<JiraConfigInfo>('/api/jira/auth/config-info'),
+  deleteSavedAccount: (username: string) => api.delete<{ success: boolean; message: string }>(`/api/jira/auth/saved-accounts/${encodeURIComponent(username)}`),
   getStatus: () => api.get<any>('/api/jira/status'),
+  getCaptcha: (params?: { baseUrl?: string; captchaId?: string }) =>
+    api.get<{ success: boolean; captchaId: string; captchaImage: string }>('/api/jira/auth/captcha', { params }),
 };
 
 export const jiraApi = {
@@ -283,6 +305,8 @@ export const jiraApi = {
     api.post<{ id: string; key: string; self: string }>('/api/jira/issues', data),
   getIssue: (key: string) => api.get<JiraIssue>(`/api/jira/issues/${key}`),
   updateIssue: (key: string, data: any) => api.put(`/api/jira/issues/${key}`, data),
+  deleteIssue: (key: string, params?: { deleteSubtasks?: boolean }) =>
+    api.delete(`/api/jira/issues/${key}`, { params }),
   getTransitions: (issueKey: string) => api.get<any[]>(`/api/jira/issues/${issueKey}/transitions`),
   transitionIssue: (issueKey: string, transitionId: string) =>
     api.post(`/api/jira/issues/${issueKey}/transitions`, { transitionId }),
@@ -292,12 +316,18 @@ export const jiraApi = {
     api.get<{ total: number; worklogs: any[] }>(`/api/jira/issues/${issueKey}/worklog`),
   createWorklog: (issueKey: string, data: JiraCreateWorklogPayload) =>
     api.post(`/api/jira/issues/${issueKey}/worklog`, data),
+  updateWorklog: (issueKey: string, worklogId: string, data: Partial<JiraCreateWorklogPayload>) =>
+    api.put(`/api/jira/issues/${issueKey}/worklog/${worklogId}`, data),
+  deleteWorklog: (issueKey: string, worklogId: string, params?: { adjustEstimate?: string }) =>
+    api.delete(`/api/jira/issues/${issueKey}/worklog/${worklogId}`, { params }),
   getMyIssues: () => api.get<JiraIssue[]>('/api/jira/my-issues'),
-  getMySubtasks: (params?: { status?: string; search?: string; limit?: number }) =>
+  getMySubtasks: (params?: { status?: string; search?: string; limit?: number; dueToday?: boolean }) =>
     api.get<JiraAssignedSubtask[]>('/api/jira/my-subtasks', { params }),
   getRecentWorklogs: () => api.get<JiraWorklogItem[]>('/api/jira/worklogs/recent'),
   getWeeklyWorklogs: (params?: { startDate?: string; endDate?: string }) =>
     api.get<WeeklyCalendarResponse>('/api/jira/worklogs/week', { params }),
+  getActivityStream: (params?: { startDate?: string; endDate?: string; author?: string; project?: string; q?: string; maxResults?: number }) =>
+    api.get<ActivityStreamResponse>('/api/jira/activity-stream', { params }),
   search: (queryOrJql: string | { q?: string; jql?: string; status?: string; assignee?: string; issueType?: string; project?: string; startAt?: number; maxResults?: number }) => {
     if (typeof queryOrJql === 'string') {
       return api.get<any>('/api/jira/search', { params: { jql: queryOrJql } });
@@ -308,10 +338,15 @@ export const jiraApi = {
 
 export const filesApi = {
   uploadImage: (formData: FormData) =>
-    api.post<{ id: number; url: string }>('/api/files/upload', formData, {
+    api.post<{ id: number; url: string; originalName?: string; storedName?: string; sizeBytes?: number }>('/api/files/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     }),
+  getScreenImages: (screenId: number) =>
+    api.get<ScreenImage[]>(`/api/files/screen/${screenId}`),
+  linkImagesToScreen: (screenId: number, imageIds?: number[], storedNames?: string[]) =>
+    api.post<{ success: boolean }>('/api/files/link-screen', { screenId, imageIds, storedNames }),
   deleteImage: (id: number) => api.delete(`/api/files/${id}`),
+  deleteImageByName: (storedName: string) => api.delete(`/api/files/by-name/${encodeURIComponent(storedName)}`),
 };
 
 export const bugsApi = {
@@ -383,6 +418,96 @@ export const stickyNotesApi = {
   },
   getExportUrl: (id: string, raw = false) =>
     resolveApiUrl(`/api/sticky-notes/${id}/export${raw ? '?raw=true' : ''}`)
+};
+
+export const apiDocsApi = {
+  getEndpoints: (params?: { moduleId?: number | string; folder?: string; version?: string; method?: string; status?: string; tag?: string; q?: string }) =>
+    api.get<ApiEndpoint[]>('/api/api-docs/endpoints', { params }),
+  getEndpoint: (id: number) =>
+    api.get<ApiEndpoint>(`/api/api-docs/endpoints/${id}`),
+  createEndpoint: (data: Partial<ApiEndpoint>) =>
+    api.post<ApiEndpoint>('/api/api-docs/endpoints', data),
+  updateEndpoint: (id: number, data: Partial<ApiEndpoint>) =>
+    api.put<ApiEndpoint>(`/api/api-docs/endpoints/${id}`, data),
+  deleteEndpoint: (id: number) =>
+    api.delete<{ message: string }>(`/api/api-docs/endpoints/${id}`),
+  duplicateEndpoint: (id: number) =>
+    api.post<ApiEndpoint>(`/api/api-docs/endpoints/${id}/duplicate`),
+  togglePinEndpoint: (id: number) =>
+    api.patch<{ id: number; is_pinned: boolean }>(`/api/api-docs/endpoints/${id}/pin`),
+  reorderEndpoints: (items: Array<{ id: number; folder?: string; sort_order: number }>) =>
+    api.post<{ success: boolean; count: number }>('/api/api-docs/endpoints/reorder', { items }),
+  getFolders: (moduleId?: number | string) =>
+    api.get<string[]>('/api/api-docs/folders', { params: { moduleId } }),
+
+  // Models / Schemas
+  getModels: (moduleId?: number | string) =>
+    api.get<ApiModel[]>('/api/api-docs/models', { params: { moduleId } }),
+  createModel: (data: Partial<ApiModel>) =>
+    api.post<ApiModel>('/api/api-docs/models', data),
+  updateModel: (id: number, data: Partial<ApiModel>) =>
+    api.put<ApiModel>(`/api/api-docs/models/${id}`, data),
+  deleteModel: (id: number) =>
+    api.delete<{ message: string; referencesCount: number; referencingEndpoints: any[] }>(`/api/api-docs/models/${id}`),
+
+  // Error Codes
+  getErrorCodes: (params?: { moduleId?: number | string; category?: string; httpStatus?: number; q?: string }) =>
+    api.get<ApiErrorCode[]>('/api/api-docs/error-codes', { params }),
+  createErrorCode: (data: Partial<ApiErrorCode>) =>
+    api.post<ApiErrorCode>('/api/api-docs/error-codes', data),
+  updateErrorCode: (id: number, data: Partial<ApiErrorCode>) =>
+    api.put<ApiErrorCode>(`/api/api-docs/error-codes/${id}`, data),
+  deleteErrorCode: (id: number) =>
+    api.delete<{ message: string }>(`/api/api-docs/error-codes/${id}`),
+
+  // Environments
+  getEnvironments: (moduleId?: number | string) =>
+    api.get<ApiEnvironment[]>('/api/api-docs/environments', { params: { moduleId } }),
+  saveEnvironments: (moduleId: number | string, environments: ApiEnvironment[]) =>
+    api.put<ApiEnvironment[]>('/api/api-docs/environments', { moduleId, environments }),
+
+  // Import
+  importCurl: (data: { curl: string; moduleId: number; folder?: string }) =>
+    api.post<{ message: string; endpoint: ApiEndpoint }>('/api/api-docs/import/curl', data),
+  importOpenApi: (data: { spec: any; moduleId: number; defaultFolder?: string; conflictStrategy?: 'skip' | 'overwrite' | 'keep_both' }) =>
+    api.post<{ success: boolean; importedEndpoints: number; importedModels: number; message: string }>('/api/api-docs/import/openapi', data),
+  importPostman: (data: { collection: any; moduleId: number; conflictStrategy?: 'skip' | 'overwrite' | 'keep_both' }) =>
+    api.post<{ success: boolean; importedEndpoints: number; message: string }>('/api/api-docs/import/postman', data),
+
+  // Export URLs
+  getExportOpenApiUrl: (moduleId: number, version = 'v1') =>
+    resolveApiUrl(`/api/api-docs/export/openapi?moduleId=${moduleId}&version=${version}`),
+  getExportMarkdownUrl: (moduleId: number, endpointId?: number) =>
+    resolveApiUrl(`/api/api-docs/export/markdown?moduleId=${moduleId}${endpointId ? `&endpointId=${endpointId}` : ''}`),
+
+  // Postman Runner Proxy & Example Sync
+  proxyTest: (data: {
+    url: string;
+    method?: string;
+    headers?: Record<string, string>;
+    params?: Record<string, string>;
+    body?: any;
+    timeoutMs?: number;
+  }) =>
+    api.post<{
+      success: boolean;
+      status: number;
+      statusText: string;
+      durationMs: number;
+      sizeBytes: number;
+      headers: Record<string, string>;
+      body: any;
+      rawBody: string;
+      isJson: boolean;
+    }>('/api/api-docs/proxy-test', data),
+
+  saveResponseAsExample: (endpointId: number, data: {
+    statusCode: number;
+    description?: string;
+    name?: string;
+    body: any;
+  }) =>
+    api.post<{ success: boolean; message: string; responses: any[] }>(`/api/api-docs/endpoints/${endpointId}/save-response-example`, data),
 };
 
 export default api;

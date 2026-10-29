@@ -72,11 +72,17 @@ export function getRouteTitle(pathname: string): string {
   if (path === '/jira/logwork') {
     return 'Chấm công Log Work';
   }
+  if (path === '/jira/activity-stream') {
+    return 'Activity Stream - Toàn bộ nhân sự log time';
+  }
   if (path.startsWith('/jira/board/')) {
     return 'Kanban Board';
   }
 
   // Tools Module
+  if (path === '/tools/crypto-identity') {
+    return 'Mã hóa & Định danh';
+  }
   if (path === '/tools/sticky-notes') {
     return 'Ghi chú Sticky Notes';
   }

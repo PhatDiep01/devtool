@@ -158,7 +158,7 @@ export function parseFlexibleTimeToSeconds(input: string | number | undefined | 
   }
 
   let totalSeconds = 0;
-  const regex = /(\d+(?:\.\d+)?)\s*(w|d|h|m|s)/g;
+  const regex = /(\d+(?:\.\d+)?)\s*(w|d|h|m|p|s)/g;
   let match;
   let found = false;
 
@@ -178,6 +178,7 @@ export function parseFlexibleTimeToSeconds(input: string | number | undefined | 
         totalSeconds += val * 3600;
         break;
       case 'm': // minute = 60s
+      case 'p': // phút = 60s
         totalSeconds += val * 60;
         break;
       case 's': // second

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { 
   ArrowLeft, 
@@ -13,14 +13,17 @@ import {
   FileText,
   ExternalLink,
   Sparkles,
-  HelpCircle
+  HelpCircle,
+  Upload,
+  Image as ImageIcon
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
-import { docsApi } from '../../../services/api';
-import { Module, Screen } from '../../../types';
+import { docsApi, filesApi } from '../../../services/api';
+import { Module, Screen, ScreenImage } from '../../../types';
 import { useJiraAuthStore } from '../../../stores/jira-auth.store';
 import { MarkdownEditor } from '../components/MarkdownEditor';
-import { splitFrontmatterAndBody, composeFullMarkdown } from '../../../utils/markdownConverter';
+import { ScreenImagesGallery } from '../components/ScreenImagesGallery';
+import { splitFrontmatterAndBody, composeFullMarkdown, removeImageFromMarkdown } from '../../../utils/markdownConverter';
 import { SearchableSelect, SelectOption } from '../../../components/ui';
 import { usePageTitle } from '../../../utils/usePageTitle';
 
@@ -50,6 +53,12 @@ export const ScreenEditorPage: React.FC = () => {
   const [bodyContent, setBodyContent] = useState<string>('');
   const [originalScreen, setOriginalScreen] = useState<Screen | null>(null);
 
+  // Screen attached images
+  const [screenImages, setScreenImages] = useState<ScreenImage[]>([]);
+
+  // File input ref for importing .md files
+  const mdFileInputRef = useRef<HTMLInputElement>(null);
+
   // Initial load
   useEffect(() => {
     setLoading(true);
@@ -77,6 +86,15 @@ export const ScreenEditorPage: React.FC = () => {
           const tags = s.tags || frontmatter.tags || [];
           setTagsInput(Array.isArray(tags) ? tags.join(', ') : '');
           setBodyContent(body || s.raw_content || '');
+
+          if (Array.isArray(s.images)) {
+            setScreenImages(s.images);
+          } else {
+            // Fallback load images
+            filesApi.getScreenImages(Number(id))
+              .then((imgRes) => setScreenImages(imgRes.data || []))
+              .catch(() => {});
+          }
         } else {
           // New screen defaults
           if (queryModuleId) {
@@ -133,6 +151,131 @@ Mô tả vai trò, mục tiêu và phạm vi của màn hình.
       .finally(() => setLoading(false));
   }, [id, isNew, queryModuleId]);
 
+  // Handle importing .md file directly into editor
+  const handleImportMdFile = (file: File) => {
+    if (!file.name.toLowerCase().endsWith('.md')) {
+      toast.error('Vui lòng chọn file Markdown (.md) hợp lệ');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const content = (e.target?.result as string) || '';
+      if (!content.trim()) {
+        toast.error('File Markdown rỗng');
+        return;
+      }
+
+      const { frontmatter, body } = splitFrontmatterAndBody(content);
+
+      // Auto-extract title: frontmatter.title -> first # Heading -> file name
+      let parsedTitle = frontmatter.title || '';
+      if (!parsedTitle) {
+        const headingMatch = body.match(/^#\s+(.+)$/m);
+        if (headingMatch) {
+          parsedTitle = headingMatch[1].trim();
+        } else {
+          parsedTitle = file.name.replace(/\.md$/i, '');
+        }
+      }
+
+      if (parsedTitle) setTitle(parsedTitle);
+      if (frontmatter.author) setAuthor(frontmatter.author);
+      if (frontmatter.jira) setJiraKey(frontmatter.jira);
+      if (frontmatter.status) setStatus(frontmatter.status);
+
+      if (frontmatter.tags && Array.isArray(frontmatter.tags)) {
+        setTagsInput(frontmatter.tags.join(', '));
+      }
+
+      // Match module if specified in frontmatter
+      if (frontmatter.module && modules.length > 0) {
+        const modName = frontmatter.module.trim().toLowerCase();
+        const matched = modules.find(
+          (m) => m.name.toLowerCase() === modName || m.slug.toLowerCase() === modName
+        );
+        if (matched) {
+          setSelectedModuleId(matched.id);
+        }
+      }
+
+      setBodyContent(body || content);
+      toast.success(`Đã nạp thành công nội dung và thuộc tính từ file "${file.name}"!`);
+    };
+    reader.readAsText(file);
+  };
+
+  // Deferred upload handler for images inserted directly via MarkdownEditor
+  const handleEditorUploadImage = async (file: File): Promise<string> => {
+    const previewUrl = URL.createObjectURL(file);
+    const tempId = `temp_img_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const pendingImg: ScreenImage = {
+      id: -Date.now(),
+      tempId,
+      screen_id: !isNew && id ? Number(id) : null,
+      original_name: file.name,
+      stored_name: file.name,
+      mime_type: file.type,
+      size_bytes: file.size,
+      created_at: new Date().toISOString(),
+      url: previewUrl,
+      isPending: true,
+      file,
+    };
+    setScreenImages((prev) => [pendingImg, ...prev]);
+    toast.success('Đã thêm ảnh vào danh sách (Chờ bấm "Lưu tài liệu" để lưu lên máy chủ)');
+    return previewUrl;
+  };
+
+  // Deleting image from Gallery removes it from document bodyContent
+  const handleGalleryDeleteImage = (deletedImg: ScreenImage) => {
+    setBodyContent((prev) => removeImageFromMarkdown(prev, deletedImg));
+    toast.success(`Đã xóa ảnh "${deletedImg.original_name}" và loại bỏ khỏi nội dung tài liệu`);
+  };
+
+  // Deleting image from Editor removes it from Gallery & cleans server storage
+  const handleEditorDeleteImage = async (imageSrc: string) => {
+    if (!imageSrc) return;
+
+    // Find in screenImages
+    const matched = screenImages.find((img) => {
+      if (img.url && (img.url === imageSrc || imageSrc.includes(img.url))) return true;
+      if (img.stored_name && imageSrc.includes(img.stored_name)) return true;
+      if (img.tempId && imageSrc.includes(img.tempId)) return true;
+      if (img.original_name && img.original_name.length > 3 && imageSrc.includes(img.original_name)) return true;
+      return false;
+    });
+
+    if (matched) {
+      setScreenImages((prev) => prev.filter((item) => item.id !== matched.id));
+      if (!matched.isPending) {
+        try {
+          await filesApi.deleteImage(matched.id);
+          if (matched.stored_name) {
+            await filesApi.deleteImageByName(matched.stored_name).catch(() => {});
+          }
+          toast.success(`Đã xóa ảnh "${matched.original_name}" trên máy chủ và giải phóng bộ nhớ!`);
+        } catch (e) {
+          console.error(e);
+        }
+      } else if (matched.url?.startsWith('blob:')) {
+        try { URL.revokeObjectURL(matched.url); } catch {}
+      }
+    } else {
+      // If imageSrc contains /api/files/images/<filename>
+      const match = imageSrc.match(/\/api\/files\/images\/([^"'\s?#]+)/);
+      if (match && match[1]) {
+        const storedName = match[1];
+        try {
+          await filesApi.deleteImageByName(storedName);
+          toast.success(`Đã xóa file ảnh "${storedName}" trên máy chủ để tránh đầy bộ nhớ!`);
+        } catch (e) {
+          console.error(e);
+        }
+      }
+    }
+  };
+
   const handleSave = async () => {
     if (!title.trim()) {
       toast.error('Vui lòng nhập tên màn hình đặc tả');
@@ -144,28 +287,89 @@ Mô tả vai trò, mục tiêu và phạm vi của màn hình.
     }
 
     setSaving(true);
-    const tagsArray = tagsInput
-      .split(',')
-      .map((t) => t.trim())
-      .filter(Boolean);
-
-    const safeModules = Array.isArray(modules) ? modules : [];
-    const currentModule = safeModules.find((m) => m.id === Number(selectedModuleId));
-
-    // Recombine metadata and body into clean standard Markdown with Frontmatter
-    const fullMarkdownContent = composeFullMarkdown(
-      {
-        title: title.trim(),
-        moduleName: currentModule?.name,
-        author: author.trim() || 'Author',
-        status,
-        jiraKey: jiraKey.trim() || undefined,
-        tags: tagsArray
-      },
-      bodyContent
-    );
 
     try {
+      // 1. Upload pending images to server first before saving screen
+      const pendingImages = screenImages.filter((img) => img.isPending && img.file);
+      if (pendingImages.length > 0) {
+        toast.loading(`Đang tải ${pendingImages.length} ảnh lên máy chủ...`, { id: 'uploading-screen-imgs' });
+      }
+
+      const urlReplacements: Array<{ tempUrl: string; realUrl: string }> = [];
+      const finalImages: ScreenImage[] = [];
+
+      for (const img of screenImages) {
+        if (img.isPending && img.file) {
+          const formData = new FormData();
+          formData.append('image', img.file);
+          if (!isNew && id) formData.append('screen_id', id);
+
+          const uploadRes = await filesApi.uploadImage(formData);
+          const realUrl = uploadRes.data.url;
+
+          urlReplacements.push({ tempUrl: img.url, realUrl });
+          if (img.tempId) {
+            urlReplacements.push({ tempUrl: img.tempId, realUrl });
+          }
+
+          finalImages.push({
+            id: uploadRes.data.id,
+            screen_id: !isNew && id ? Number(id) : null,
+            original_name: uploadRes.data.originalName || img.original_name,
+            stored_name: uploadRes.data.storedName || img.stored_name,
+            mime_type: img.mime_type,
+            size_bytes: uploadRes.data.sizeBytes || img.size_bytes,
+            created_at: new Date().toISOString(),
+            url: realUrl,
+            isPending: false,
+            width: img.width,
+            height: img.height,
+          });
+
+          // Clean up local blob URL
+          if (img.url.startsWith('blob:')) {
+            try {
+              URL.revokeObjectURL(img.url);
+            } catch {}
+          }
+        } else {
+          finalImages.push(img);
+        }
+      }
+
+      if (pendingImages.length > 0) {
+        toast.dismiss('uploading-screen-imgs');
+      }
+
+      // 2. Replace any temporary blob/temp URLs in bodyContent with real server URLs
+      let finalBodyContent = bodyContent;
+      for (const rep of urlReplacements) {
+        finalBodyContent = finalBodyContent.split(rep.tempUrl).join(rep.realUrl);
+      }
+
+      const tagsArray = tagsInput
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean);
+
+      const safeModules = Array.isArray(modules) ? modules : [];
+      const currentModule = safeModules.find((m) => m.id === Number(selectedModuleId));
+
+      // Recombine metadata and body into clean standard Markdown with Frontmatter
+      const fullMarkdownContent = composeFullMarkdown(
+        {
+          title: title.trim(),
+          moduleName: currentModule?.name,
+          author: author.trim() || 'Author',
+          status,
+          jiraKey: jiraKey.trim() || undefined,
+          tags: tagsArray
+        },
+        finalBodyContent
+      );
+
+      const imageIds = finalImages.map((img) => img.id).filter((imgId) => imgId > 0);
+
       if (isNew) {
         const res = await docsApi.createScreen({
           moduleId: Number(selectedModuleId),
@@ -174,9 +378,10 @@ Mô tả vai trò, mục tiêu và phạm vi của màn hình.
           status,
           jira_key: jiraKey.trim() || undefined,
           tags: tagsArray,
-          raw_content: fullMarkdownContent
+          raw_content: fullMarkdownContent,
+          image_ids: imageIds
         });
-        toast.success('Tạo màn hình đặc tả thành công!');
+        toast.success('Tạo màn hình đặc tả và lưu ảnh thành công!');
         navigate(`/docs/screen/${res.data.id}`);
       } else if (id) {
         const res = await docsApi.updateScreen(Number(id), {
@@ -186,9 +391,10 @@ Mô tả vai trò, mục tiêu và phạm vi của màn hình.
           status,
           jira_key: jiraKey.trim() || undefined,
           tags: tagsArray,
-          raw_content: fullMarkdownContent
+          raw_content: fullMarkdownContent,
+          image_ids: imageIds
         });
-        toast.success('Lưu tài liệu đặc tả thành công!');
+        toast.success('Lưu tài liệu đặc tả và ảnh thành công!');
         navigate(`/docs/screen/${res.data.id}`);
       }
     } catch (err: any) {
@@ -212,6 +418,20 @@ Mô tả vai trò, mục tiêu và phạm vi của màn hình.
 
   return (
     <div className="p-3 sm:p-6 md:p-8 max-w-7xl mx-auto space-y-5 animate-in fade-in duration-200">
+      {/* Hidden file input for importing .md */}
+      <input
+        type="file"
+        ref={mdFileInputRef}
+        onChange={(e) => {
+          if (e.target.files && e.target.files[0]) {
+            handleImportMdFile(e.target.files[0]);
+            e.target.value = '';
+          }
+        }}
+        accept=".md"
+        className="hidden"
+      />
+
       {/* Header Bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-border/80">
         <div className="flex items-center gap-3">
@@ -243,7 +463,18 @@ Mô tả vai trò, mục tiêu và phạm vi của màn hình.
         </div>
 
         {/* Action Buttons */}
-        <div className="flex items-center gap-2.5 shrink-0 self-end sm:self-auto">
+        <div className="flex items-center gap-2 shrink-0 self-end sm:self-auto flex-wrap">
+          {/* Import .md File Button */}
+          <button
+            type="button"
+            onClick={() => mdFileInputRef.current?.click()}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold border border-primary/30 bg-primary/10 hover:bg-primary/20 text-primary transition shadow-xs"
+            title="Nhập nội dung từ file Markdown (.md) có sẵn trên máy"
+          >
+            <Upload className="w-4 h-4" />
+            <span>Import file .md</span>
+          </button>
+
           <button
             type="button"
             onClick={() => {
@@ -369,6 +600,19 @@ Mô tả vai trò, mục tiêu và phạm vi của màn hình.
         </div>
       </div>
 
+      {/* Visual Attached Images Gallery */}
+      <ScreenImagesGallery
+        images={screenImages}
+        onImagesChange={setScreenImages}
+        screenId={!isNew && id ? Number(id) : undefined}
+        onInsertToMarkdown={(snippet) => {
+          setBodyContent((prev) => `${prev.trim()}\n\n${snippet}\n`);
+        }}
+        onDeleteImage={handleGalleryDeleteImage}
+        title="Ảnh đính kèm & Mockup giao diện"
+        deferUpload={true}
+      />
+
       {/* Rich Markdown & WYSIWYG Editor */}
       <div>
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 mb-2">
@@ -389,8 +633,11 @@ Mô tả vai trò, mục tiêu và phạm vi của màn hình.
           isSaving={saving}
           minHeight="550px"
           placeholder="Nhập nội dung đặc tả, mô tả tính năng, quy tắc nghiệp vụ, bảng AC..."
+          onUploadImage={handleEditorUploadImage}
+          onDeleteImage={handleEditorDeleteImage}
         />
       </div>
     </div>
   );
 };
+export default ScreenEditorPage;

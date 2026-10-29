@@ -22,23 +22,23 @@ export const SearchResults: React.FC = () => {
   return (
     <div className="p-4 sm:p-6 md:p-8 max-w-5xl mx-auto space-y-6 animate-in fade-in duration-200">
       <div>
-        <h2 className="text-xl sm:text-2xl font-extrabold tracking-tight text-foreground">Search Results</h2>
-        <p className="text-xs sm:text-sm text-muted-foreground mt-1">
-          Showing matching results for query: <b className="text-foreground">"{query}"</b>
+        <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-foreground">Kết quả tìm kiếm</h1>
+        <p className="text-xs sm:text-sm text-muted-foreground mt-1 leading-relaxed">
+          Hiển thị tài liệu khớp với từ khóa: <b className="text-foreground">"{query}"</b>
         </p>
       </div>
 
       {loading ? (
         <div className="p-12 text-center text-sm text-muted-foreground flex flex-col items-center justify-center min-h-[300px]">
           <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin mb-3" />
-          <span>Searching database...</span>
+          <span>Đang tìm kiếm trong kho tài liệu...</span>
         </div>
       ) : results.length === 0 ? (
-        <div className="bg-card border border-border rounded-2xl p-8 sm:p-12 text-center space-y-3 shadow-sm">
+        <div className="bg-card border border-border rounded-2xl p-8 sm:p-12 text-center space-y-3 shadow-xs">
           <Search className="w-8 h-8 mx-auto text-muted-foreground/60" />
-          <h4 className="text-base font-bold text-foreground">No matching specifications found</h4>
-          <p className="text-xs text-muted-foreground max-w-md mx-auto">
-            Try searching for screen titles, API endpoints (GET /api/...), business rules, or author names.
+          <h4 className="text-base font-bold text-foreground">Không tìm thấy tài liệu phù hợp</h4>
+          <p className="text-xs text-muted-foreground max-w-md mx-auto leading-relaxed">
+            Hãy thử tìm kiếm theo tên màn hình, API endpoint, quy tắc nghiệp vụ hoặc Jira key.
           </p>
         </div>
       ) : (

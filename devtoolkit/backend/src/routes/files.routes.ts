@@ -99,6 +99,51 @@ router.post('/upload', uploadMiddleware, (req: Request, res: Response) => {
   }
 });
 
+// GET /api/files/screen/:screenId - Get all images for a specific screen
+router.get('/screen/:screenId', (req: Request, res: Response) => {
+  try {
+    const { screenId } = req.params;
+    const db = getDb();
+    const rows: any[] = db.prepare(`
+      SELECT id, screen_id, original_name, stored_name, mime_type, size_bytes, created_at
+      FROM images
+      WHERE screen_id = ?
+      ORDER BY id DESC
+    `).all(screenId);
+
+    const images = rows.map(r => ({
+      ...r,
+      url: `/api/files/images/${r.stored_name}`
+    }));
+
+    res.json(images);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/files/link-screen - Link uploaded images to a screen
+router.post('/link-screen', (req: Request, res: Response) => {
+  try {
+    const { screenId, imageIds, storedNames } = req.body;
+    if (!screenId) return res.status(400).json({ error: 'screenId is required' });
+
+    const db = getDb();
+    if (Array.isArray(imageIds) && imageIds.length > 0) {
+      const placeholders = imageIds.map(() => '?').join(',');
+      db.prepare(`UPDATE images SET screen_id = ? WHERE id IN (${placeholders})`).run(screenId, ...imageIds);
+    }
+    if (Array.isArray(storedNames) && storedNames.length > 0) {
+      const placeholders = storedNames.map(() => '?').join(',');
+      db.prepare(`UPDATE images SET screen_id = ? WHERE stored_name IN (${placeholders})`).run(screenId, ...storedNames);
+    }
+
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // GET /api/files/:id - File info
 router.get('/:id', (req: Request, res: Response) => {
   try {
@@ -107,6 +152,28 @@ router.get('/:id', (req: Request, res: Response) => {
     const image: any = db.prepare('SELECT * FROM images WHERE id = ?').get(id);
     if (!image) return res.status(404).json({ error: 'Image not found' });
     res.json(image);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// DELETE /api/files/by-name/:storedName - Delete image by stored filename
+router.delete('/by-name/:storedName', (req: Request, res: Response) => {
+  try {
+    const { storedName } = req.params;
+    const db = getDb();
+    const safeStoredName = path.basename(storedName);
+    const filePath = path.join(getUploadDir(), safeStoredName);
+    assertPathInside(getUploadDir(), filePath);
+
+    if (fs.existsSync(filePath)) {
+      try {
+        fs.unlinkSync(filePath);
+      } catch (e) {}
+    }
+
+    db.prepare('DELETE FROM images WHERE stored_name = ?').run(safeStoredName);
+    res.json({ message: 'Image deleted successfully by filename' });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

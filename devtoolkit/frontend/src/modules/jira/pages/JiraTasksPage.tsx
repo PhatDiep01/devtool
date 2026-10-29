@@ -14,7 +14,11 @@ import {
   ArrowRight,
   Code,
   CheckCircle2,
-  AlertCircle
+  AlertCircle,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
+  RotateCcw
 } from 'lucide-react';
 import { jiraApi, getJiraProxyImageUrl } from '../../../services/api';
 import { JiraIssue, JiraIssueType, JiraAssignableUser } from '../../../types';
@@ -25,6 +29,178 @@ import { IssueTypeIcon } from '../components/IssueTypeIcon';
 import { JiraAvatar } from '../components/JiraAvatar';
 import { SearchableSelect, SelectOption } from '../../../components/ui';
 import { toast } from 'react-hot-toast';
+import { useSearchParams } from 'react-router-dom';
+
+// Helper to determine if an issue is a Sub-task
+export const isJiraSubtask = (issue: JiraIssue): boolean => {
+  return Boolean(
+    issue.fields.issuetype?.subtask ||
+    issue.fields.parent ||
+    (issue.fields.issuetype?.name && /sub[-\s]?task/i.test(issue.fields.issuetype.name))
+  );
+};
+
+// Workflow stage ranking (10: To Do -> 20: Analysis -> 30: In Progress -> 40: Review -> 50: QA -> 60: Deploy -> 70: Resolved -> 80: Done)
+export const getStatusWorkflowRank = (statusName?: string, statusCategoryKey?: string): number => {
+  const name = (statusName || '').trim().toLowerCase();
+  const cat = (statusCategoryKey || '').trim().toLowerCase();
+
+  // 1. To Do / Open / Backlog / New / Reopened
+  if (
+    name.includes('to do') ||
+    name === 'open' ||
+    name.includes('backlog') ||
+    name === 'new' ||
+    name.includes('reopen') ||
+    name.includes('ready for dev') ||
+    name.includes('selected') ||
+    name.includes('chờ làm') ||
+    name.includes('mới') ||
+    name.includes('tiếp nhận')
+  ) {
+    return 10;
+  }
+
+  // 2. Analysis / Spec / Requirements / Planning
+  if (
+    name.includes('analysis') ||
+    name.includes('spec') ||
+    name.includes('plan') ||
+    name.includes('requirement') ||
+    name.includes('phân tích') ||
+    name.includes('đặc tả')
+  ) {
+    return 20;
+  }
+
+  // 3. In Progress / Developing / Coding
+  if (
+    name.includes('in progress') ||
+    name.includes('inprogress') ||
+    name.includes('developing') ||
+    name.includes('development') ||
+    name.includes('coding') ||
+    name.includes('backend') ||
+    name.includes('frontend') ||
+    name.includes('đang làm') ||
+    name.includes('đang thực hiện') ||
+    name.includes('tiến hành')
+  ) {
+    return 30;
+  }
+
+  // 4. Code Review / Review / CR / PR
+  if (
+    name.includes('review') ||
+    name.includes('cr') ||
+    name.includes('pull request') ||
+    name.includes('pr') ||
+    name.includes('đang duyệt') ||
+    name.includes('chờ duyệt')
+  ) {
+    return 40;
+  }
+
+  // 5. Testing / QA / QC / In QA / Ready for QA
+  if (
+    name.includes('test') ||
+    name.includes('qa') ||
+    name.includes('qc') ||
+    name.includes('uat') ||
+    name.includes('verif') ||
+    name.includes('kiểm thử') ||
+    name.includes('chờ kiểm thử')
+  ) {
+    return 50;
+  }
+
+  // 6. Deploy / Staging / Ready for Release
+  if (
+    name.includes('deploy') ||
+    name.includes('staging') ||
+    name.includes('release') ||
+    name.includes('triển khai')
+  ) {
+    return 60;
+  }
+
+  // 7. Resolved / Đã giải quyết
+  if (name.includes('resolved') || name.includes('đã giải quyết') || name.includes('đã sửa')) {
+    return 70;
+  }
+
+  // 8. Done / Closed / Completed
+  if (
+    name.includes('done') ||
+    name.includes('closed') ||
+    name.includes('complete') ||
+    name.includes('hoàn thành') ||
+    name.includes('đóng') ||
+    cat === 'done'
+  ) {
+    return 80;
+  }
+
+  // Fallback by Jira status category
+  if (cat === 'new' || cat === 'to_do' || cat === 'todo') return 15;
+  if (cat === 'indeterminate' || cat === 'in_progress') return 35;
+  if (cat === 'done') return 85;
+
+  return 35;
+};
+
+// Workflow status badge colors
+export const getWorkflowStatusBadgeClass = (statusName?: string, statusCategoryKey?: string): string => {
+  const rank = getStatusWorkflowRank(statusName, statusCategoryKey);
+
+  // To Do / Open
+  if (rank <= 15) {
+    return 'bg-slate-500/15 text-slate-700 dark:text-slate-300 border border-slate-500/25';
+  }
+  // Analysis / Spec
+  if (rank <= 25) {
+    return 'bg-purple-500/15 text-purple-700 dark:text-purple-300 border border-purple-500/25';
+  }
+  // In Progress / Coding
+  if (rank <= 35) {
+    return 'bg-blue-500/15 text-blue-700 dark:text-blue-300 border border-blue-500/25';
+  }
+  // Review / CR
+  if (rank <= 45) {
+    return 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/25';
+  }
+  // Testing / QA
+  if (rank <= 55) {
+    return 'bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/25';
+  }
+  // Staging / Deploy
+  if (rank <= 65) {
+    return 'bg-teal-500/15 text-teal-700 dark:text-teal-300 border border-teal-500/25';
+  }
+  // Resolved / Done / Closed
+  return 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/25';
+};
+
+const getPriorityRank = (priorityName?: string): number => {
+  const p = (priorityName || '').toLowerCase();
+  if (p.includes('highest') || p.includes('blocker')) return 1;
+  if (p.includes('high') || p.includes('critical')) return 2;
+  if (p.includes('medium') || p.includes('major')) return 3;
+  if (p.includes('low') || p.includes('minor')) return 4;
+  if (p.includes('lowest') || p.includes('trivial')) return 5;
+  return 3;
+};
+
+export type TaskSortField = 
+  | 'workflow' 
+  | 'type' 
+  | 'key' 
+  | 'summary' 
+  | 'status' 
+  | 'priority' 
+  | 'assignee' 
+  | 'points' 
+  | 'updated';
 
 const TASK_FILTERS_STORAGE_KEY = 'jira_task_filters';
 
@@ -82,7 +258,9 @@ export const JiraTasksPage: React.FC = () => {
   const [useCustomJql, setUseCustomJql] = useState(false);
   const [customJql, setCustomJql] = useState('');
   const [page, setPage] = useState(0);
-  const pageSize = 20;
+  const [pageSize, setPageSize] = useState(50);
+  const [sortBy, setSortBy] = useState<TaskSortField>('workflow');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
 
   // Modals state
   const [detailIssueKey, setDetailIssueKey] = useState<string | null>(null);
@@ -92,6 +270,19 @@ export const JiraTasksPage: React.FC = () => {
   
   const [logWorkKey, setLogWorkKey] = useState<string | null>(null);
   const [logWorkSummary, setLogWorkSummary] = useState<string>('');
+  const [searchParams] = useSearchParams();
+
+  // Listen to searchParams (e.g. from global search)
+  useEffect(() => {
+    const qParam = searchParams.get('q');
+    if (qParam) {
+      setSearchQuery(qParam);
+    }
+    const issueParam = searchParams.get('issue');
+    if (issueParam) {
+      setDetailIssueKey(issueParam);
+    }
+  }, [searchParams]);
 
   // Persist non-keyword filters to LocalStorage whenever they change
   useEffect(() => {
@@ -123,7 +314,7 @@ export const JiraTasksPage: React.FC = () => {
 
   useEffect(() => {
     executeSearch();
-  }, [page, quickFilter, selectedProject, selectedStatus, selectedType, selectedAssignee, useCustomJql]);
+  }, [page, pageSize, quickFilter, selectedProject, selectedStatus, selectedType, selectedAssignee, useCustomJql]);
 
   const handleResetFilters = () => {
     setSelectedProject('');
@@ -269,6 +460,122 @@ export const JiraTasksPage: React.FC = () => {
       };
     }),
   ], [assignees]);
+
+  const handleSortClick = (field: TaskSortField) => {
+    if (sortBy === field) {
+      setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortBy(field);
+      setSortOrder('asc');
+    }
+  };
+
+  const resetToDefaultSort = () => {
+    setSortBy('workflow');
+    setSortOrder('asc');
+  };
+
+  const sortedIssues = useMemo(() => {
+    const list = [...issues];
+
+    list.sort((a, b) => {
+      // DEFAULT: 'workflow' sort (Subtask first, then Status ordered by workflow, then updated DESC)
+      if (sortBy === 'workflow') {
+        const aIsSub = isJiraSubtask(a);
+        const bIsSub = isJiraSubtask(b);
+        if (aIsSub !== bIsSub) {
+          return aIsSub ? -1 : 1;
+        }
+
+        const aRank = getStatusWorkflowRank(a.fields.status?.name, a.fields.status?.statusCategory?.key);
+        const bRank = getStatusWorkflowRank(b.fields.status?.name, b.fields.status?.statusCategory?.key);
+        if (aRank !== bRank) {
+          return sortOrder === 'asc' ? aRank - bRank : bRank - aRank;
+        }
+
+        const aDate = a.fields.updated ? new Date(a.fields.updated).getTime() : 0;
+        const bDate = b.fields.updated ? new Date(b.fields.updated).getTime() : 0;
+        return bDate - aDate;
+      }
+
+      if (sortBy === 'type') {
+        const aIsSub = isJiraSubtask(a);
+        const bIsSub = isJiraSubtask(b);
+        if (aIsSub !== bIsSub) {
+          return sortOrder === 'asc' ? (aIsSub ? -1 : 1) : (aIsSub ? 1 : -1);
+        }
+        const aRank = getStatusWorkflowRank(a.fields.status?.name, a.fields.status?.statusCategory?.key);
+        const bRank = getStatusWorkflowRank(b.fields.status?.name, b.fields.status?.statusCategory?.key);
+        return aRank - bRank;
+      }
+
+      if (sortBy === 'status') {
+        const aRank = getStatusWorkflowRank(a.fields.status?.name, a.fields.status?.statusCategory?.key);
+        const bRank = getStatusWorkflowRank(b.fields.status?.name, b.fields.status?.statusCategory?.key);
+        if (aRank !== bRank) {
+          return sortOrder === 'asc' ? aRank - bRank : bRank - aRank;
+        }
+        const aIsSub = isJiraSubtask(a);
+        const bIsSub = isJiraSubtask(b);
+        if (aIsSub !== bIsSub) return aIsSub ? -1 : 1;
+        return 0;
+      }
+
+      if (sortBy === 'key') {
+        const cmp = a.key.localeCompare(b.key, undefined, { numeric: true });
+        return sortOrder === 'asc' ? cmp : -cmp;
+      }
+
+      if (sortBy === 'summary') {
+        const aSum = a.fields.summary || '';
+        const bSum = b.fields.summary || '';
+        const cmp = aSum.localeCompare(bSum, 'vi');
+        return sortOrder === 'asc' ? cmp : -cmp;
+      }
+
+      if (sortBy === 'priority') {
+        const aP = getPriorityRank(a.fields.priority?.name);
+        const bP = getPriorityRank(b.fields.priority?.name);
+        return sortOrder === 'asc' ? aP - bP : bP - aP;
+      }
+
+      if (sortBy === 'assignee') {
+        const aName = a.fields.assignee?.displayName || '';
+        const bName = b.fields.assignee?.displayName || '';
+        const cmp = aName.localeCompare(bName, 'vi');
+        return sortOrder === 'asc' ? cmp : -cmp;
+      }
+
+      if (sortBy === 'points') {
+        const aPts = Number(a.fields.customfield_10016 ?? a.fields.customfield_10026 ?? a.fields.storyPoints ?? 0);
+        const bPts = Number(b.fields.customfield_10016 ?? b.fields.customfield_10026 ?? b.fields.storyPoints ?? 0);
+        return sortOrder === 'asc' ? aPts - bPts : bPts - aPts;
+      }
+
+      if (sortBy === 'updated') {
+        const aDate = a.fields.updated ? new Date(a.fields.updated).getTime() : 0;
+        const bDate = b.fields.updated ? new Date(b.fields.updated).getTime() : 0;
+        return sortOrder === 'asc' ? aDate - bDate : bDate - aDate;
+      }
+
+      return 0;
+    });
+
+    return list;
+  }, [issues, sortBy, sortOrder]);
+
+  const { subtasks, standardIssues } = useMemo(() => {
+    const subs: JiraIssue[] = [];
+    const standards: JiraIssue[] = [];
+    sortedIssues.forEach(iss => {
+      if (isJiraSubtask(iss)) {
+        subs.push(iss);
+      } else {
+        standards.push(iss);
+      }
+    });
+    return { subtasks: subs, standardIssues: standards };
+  }, [sortedIssues]);
 
   return (
     <div className="p-4 sm:p-6 md:p-8 max-w-7xl mx-auto space-y-6 animate-in fade-in duration-200">
@@ -547,6 +854,57 @@ export const JiraTasksPage: React.FC = () => {
 
       {/* Issues Table / List */}
       <div className="bg-card border border-border rounded-3xl overflow-hidden shadow-sm">
+        {/* Table Top Toolbar: Active Sort Indicator & Counts */}
+        <div className="px-5 py-3.5 border-b border-border/80 bg-muted/20 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-bold text-foreground flex items-center gap-1.5">
+              <Layers className="w-4 h-4 text-primary" />
+              <span>Kết quả ({total} công việc):</span>
+            </span>
+            <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-purple-500/15 text-purple-600 dark:text-purple-400 border border-purple-500/25">
+              <GitBranch className="w-3 h-3" />
+              {subtasks.length} Sub-tasks
+            </span>
+            <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-500/25">
+              <Layers className="w-3 h-3" />
+              {standardIssues.length} Tasks / Stories
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2 text-xs">
+            <span className="text-muted-foreground font-semibold flex items-center gap-1">
+              <Filter className="w-3.5 h-3.5 text-primary" />
+              <span>Sắp xếp:</span>
+            </span>
+            <span className="px-2.5 py-1 rounded-xl bg-card border border-border text-foreground font-bold text-[11px] shadow-2xs flex items-center gap-1.5">
+              {sortBy === 'workflow' ? (
+                <>
+                  <span className="text-purple-600 dark:text-purple-400">Sub-task trước</span>
+                  <span className="text-muted-foreground">→</span>
+                  <span className="text-blue-600 dark:text-blue-400">Status theo Workflow</span>
+                </>
+              ) : sortBy === 'type' ? (
+                <span>Loại task ({sortOrder === 'asc' ? 'Subtask trước' : 'Standard trước'})</span>
+              ) : sortBy === 'status' ? (
+                <span>Status ({sortOrder === 'asc' ? 'Workflow xuôi' : 'Workflow ngược'})</span>
+              ) : (
+                <span className="capitalize">{sortBy} ({sortOrder.toUpperCase()})</span>
+              )}
+            </span>
+            {sortBy !== 'workflow' && (
+              <button
+                type="button"
+                onClick={resetToDefaultSort}
+                className="p-1 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition flex items-center gap-1 text-[11px] font-semibold text-primary hover:underline"
+                title="Khôi phục sắp xếp mặc định: Subtask trước → Status theo Workflow"
+              >
+                <RotateCcw className="w-3 h-3" />
+                <span>Mặc định</span>
+              </button>
+            )}
+          </div>
+        </div>
+
         {loading ? (
           <div className="py-24 text-center text-sm text-muted-foreground flex flex-col items-center justify-center">
             <div className="w-9 h-9 border-2 border-primary border-t-transparent rounded-full animate-spin mb-3" />
@@ -564,182 +922,571 @@ export const JiraTasksPage: React.FC = () => {
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse text-xs">
               <thead>
-                <tr className="border-b border-border bg-muted/30 text-muted-foreground font-semibold">
-                  <th className="py-3 px-4 w-12">Type</th>
-                  <th className="py-3 px-4 w-28">Key</th>
-                  <th className="py-3 px-4 min-w-[280px]">Summary</th>
-                  <th className="py-3 px-4 w-32">Status</th>
-                  <th className="py-3 px-4 w-28">Priority</th>
-                  <th className="py-3 px-4 w-36">Assignee</th>
-                  <th className="py-3 px-4 w-24">Points</th>
+                <tr className="border-b border-border bg-muted/40 text-muted-foreground font-semibold text-xs select-none">
+                  <th 
+                    className="py-3 px-4 w-16 cursor-pointer hover:bg-accent/60 transition group"
+                    onClick={() => handleSortClick('type')}
+                    title="Bấm để sắp xếp theo loại (Subtask trước)"
+                  >
+                    <div className="flex items-center gap-1">
+                      <span>Type</span>
+                      {sortBy === 'type' ? (
+                        sortOrder === 'asc' ? <ArrowUp className="w-3 h-3 text-primary" /> : <ArrowDown className="w-3 h-3 text-primary" />
+                      ) : sortBy === 'workflow' ? (
+                        <span className="text-[10px] text-purple-600 dark:text-purple-400 font-bold" title="Sub-task ưu tiên 1">1st</span>
+                      ) : (
+                        <ArrowUpDown className="w-3 h-3 opacity-30 group-hover:opacity-100" />
+                      )}
+                    </div>
+                  </th>
+                  <th 
+                    className="py-3 px-4 w-28 cursor-pointer hover:bg-accent/60 transition group"
+                    onClick={() => handleSortClick('key')}
+                    title="Bấm để sắp xếp theo Issue Key"
+                  >
+                    <div className="flex items-center gap-1">
+                      <span>Key</span>
+                      {sortBy === 'key' ? (
+                        sortOrder === 'asc' ? <ArrowUp className="w-3 h-3 text-primary" /> : <ArrowDown className="w-3 h-3 text-primary" />
+                      ) : (
+                        <ArrowUpDown className="w-3 h-3 opacity-30 group-hover:opacity-100" />
+                      )}
+                    </div>
+                  </th>
+                  <th 
+                    className="py-3 px-4 min-w-[280px] cursor-pointer hover:bg-accent/60 transition group"
+                    onClick={() => handleSortClick('summary')}
+                    title="Bấm để sắp xếp theo tiêu đề"
+                  >
+                    <div className="flex items-center gap-1">
+                      <span>Summary</span>
+                      {sortBy === 'summary' ? (
+                        sortOrder === 'asc' ? <ArrowUp className="w-3 h-3 text-primary" /> : <ArrowDown className="w-3 h-3 text-primary" />
+                      ) : (
+                        <ArrowUpDown className="w-3 h-3 opacity-30 group-hover:opacity-100" />
+                      )}
+                    </div>
+                  </th>
+                  <th 
+                    className="py-3 px-4 w-36 cursor-pointer hover:bg-accent/60 transition group"
+                    onClick={() => handleSortClick('status')}
+                    title="Bấm để sắp xếp trạng thái theo workflow (To Do → In Progress → Review → Done)"
+                  >
+                    <div className="flex items-center gap-1">
+                      <span>Status</span>
+                      {sortBy === 'status' ? (
+                        sortOrder === 'asc' ? <ArrowUp className="w-3 h-3 text-primary" /> : <ArrowDown className="w-3 h-3 text-primary" />
+                      ) : sortBy === 'workflow' ? (
+                        <span className="text-[10px] text-blue-600 dark:text-blue-400 font-bold" title="Workflow quy trình 2nd">2nd</span>
+                      ) : (
+                        <ArrowUpDown className="w-3 h-3 opacity-30 group-hover:opacity-100" />
+                      )}
+                    </div>
+                  </th>
+                  <th 
+                    className="py-3 px-4 w-28 cursor-pointer hover:bg-accent/60 transition group"
+                    onClick={() => handleSortClick('priority')}
+                    title="Bấm để sắp xếp theo độ ưu tiên"
+                  >
+                    <div className="flex items-center gap-1">
+                      <span>Priority</span>
+                      {sortBy === 'priority' ? (
+                        sortOrder === 'asc' ? <ArrowUp className="w-3 h-3 text-primary" /> : <ArrowDown className="w-3 h-3 text-primary" />
+                      ) : (
+                        <ArrowUpDown className="w-3 h-3 opacity-30 group-hover:opacity-100" />
+                      )}
+                    </div>
+                  </th>
+                  <th 
+                    className="py-3 px-4 w-36 cursor-pointer hover:bg-accent/60 transition group"
+                    onClick={() => handleSortClick('assignee')}
+                    title="Bấm để sắp xếp theo người phụ trách"
+                  >
+                    <div className="flex items-center gap-1">
+                      <span>Assignee</span>
+                      {sortBy === 'assignee' ? (
+                        sortOrder === 'asc' ? <ArrowUp className="w-3 h-3 text-primary" /> : <ArrowDown className="w-3 h-3 text-primary" />
+                      ) : (
+                        <ArrowUpDown className="w-3 h-3 opacity-30 group-hover:opacity-100" />
+                      )}
+                    </div>
+                  </th>
+                  <th 
+                    className="py-3 px-4 w-24 cursor-pointer hover:bg-accent/60 transition group"
+                    onClick={() => handleSortClick('points')}
+                    title="Bấm để sắp xếp theo Story Points"
+                  >
+                    <div className="flex items-center gap-1">
+                      <span>Points</span>
+                      {sortBy === 'points' ? (
+                        sortOrder === 'asc' ? <ArrowUp className="w-3 h-3 text-primary" /> : <ArrowDown className="w-3 h-3 text-primary" />
+                      ) : (
+                        <ArrowUpDown className="w-3 h-3 opacity-30 group-hover:opacity-100" />
+                      )}
+                    </div>
+                  </th>
                   <th className="py-3 px-4 w-40 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {issues.map((issue) => {
-                  const isSubtask = Boolean(issue.fields.issuetype?.subtask || issue.fields.parent);
-                  const statusCat = issue.fields.status?.statusCategory?.key;
-
-                  return (
-                    <tr 
-                      key={issue.key}
-                      className="hover:bg-accent/40 transition group cursor-pointer"
-                      onClick={() => setDetailIssueKey(issue.key)}
-                    >
-                      {/* Type Icon */}
-                      <td className="py-3 px-4">
-                        <IssueTypeIcon type={issue.fields.issuetype} className="w-4 h-4" />
-                      </td>
-
-                      {/* Key with Subtask indicator */}
-                      <td className="py-3 px-4 font-mono font-bold text-foreground">
-                        <div className="flex items-center gap-1.5">
-                          <span className="group-hover:text-primary transition">{issue.key}</span>
-                          {isSubtask && (
-                            <span title="Sub-task">
-                              <GitBranch className="w-3 h-3 text-purple-500 shrink-0" />
-                            </span>
-                          )}
-                        </div>
-                      </td>
-
-                      {/* Summary & Parent Breadcrumb */}
-                      <td className="py-3 px-4 font-medium text-foreground">
-                        <div className="space-y-0.5">
-                          {issue.fields.parent && (
-                            <div className="text-[10px] text-muted-foreground font-mono flex items-center gap-1">
-                              <span>Parent:</span>
-                              <span className="font-bold text-foreground">{issue.fields.parent.key}</span>
-                            </div>
-                          )}
-                          <div className="line-clamp-1">{issue.fields.summary}</div>
-                        </div>
-                      </td>
-
-                      {/* Status Badge */}
-                      <td className="py-3 px-4">
-                        <span className={`px-2.5 py-0.5 rounded-full font-semibold text-[11px] inline-block ${
-                          statusCat === 'done'
-                            ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/25'
-                            : statusCat === 'indeterminate'
-                            ? 'bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-500/25'
-                            : 'bg-muted text-muted-foreground border border-border'
-                        }`}>
-                          {issue.fields.status?.name}
-                        </span>
-                      </td>
-
-                      {/* Priority */}
-                      <td className="py-3 px-4 text-muted-foreground">
-                        <div className="flex items-center gap-1.5 font-medium">
-                          {issue.fields.priority?.iconUrl && (
-                            <img 
-                              src={getJiraProxyImageUrl(issue.fields.priority.iconUrl)} 
-                              alt="" 
-                              className="w-3.5 h-3.5 object-contain" 
-                              onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
-                            />
-                          )}
-                          <span>{issue.fields.priority?.name || 'Medium'}</span>
-                        </div>
-                      </td>
-
-                      {/* Assignee */}
-                      <td className="py-3 px-4">
-                        {issue.fields.assignee ? (
-                          <div className="flex items-center gap-2 text-foreground font-medium">
-                            <JiraAvatar 
-                              avatarUrl={issue.fields.assignee.avatarUrls?.['24x24'] || issue.fields.assignee.avatarUrls?.['32x32']} 
-                              displayName={issue.fields.assignee.displayName}
-                              className="w-5 h-5"
-                              sizeText="text-[9px]"
-                            />
-                            <span className="truncate max-w-[120px]">{issue.fields.assignee.displayName}</span>
-                          </div>
-                        ) : (
-                          <span className="text-muted-foreground italic">Unassigned</span>
-                        )}
-                      </td>
-
-                      {/* Story Points */}
-                      <td className="py-3 px-4 font-mono font-bold text-muted-foreground">
-                        {issue.fields.customfield_10016 ?? issue.fields.customfield_10026 ?? issue.fields.storyPoints ?? '-'}
-                      </td>
-
-                      {/* Actions */}
-                      <td className="py-3 px-4 text-right" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center justify-end gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setLogWorkKey(issue.key);
-                              setLogWorkSummary(issue.fields.summary);
-                            }}
-                            className="p-1.5 rounded-lg hover:bg-blue-500/10 text-muted-foreground hover:text-blue-600 transition"
-                            title="Log Work to this task"
-                          >
-                            <Clock className="w-4 h-4" />
-                          </button>
-
-                          {!isSubtask && (
-                            <button
-                              type="button"
-                              onClick={() => openCreateSubtask(issue.key)}
-                              className="p-1.5 rounded-lg hover:bg-purple-500/10 text-muted-foreground hover:text-purple-600 transition"
-                              title="Add child Sub-task"
-                            >
-                              <GitBranch className="w-4 h-4" />
-                            </button>
-                          )}
-
-                          <button
-                            type="button"
-                            onClick={() => setDetailIssueKey(issue.key)}
-                            className="px-2 py-1 rounded-lg bg-accent hover:bg-accent/80 text-foreground font-semibold text-[11px] transition"
-                          >
-                            Details
-                          </button>
+                {sortBy === 'workflow' && subtasks.length > 0 && standardIssues.length > 0 ? (
+                  <>
+                    {/* Sub-tasks Section Header */}
+                    <tr className="bg-purple-500/10 border-y border-purple-500/25">
+                      <td colSpan={8} className="py-2.5 px-4 text-xs font-bold text-purple-700 dark:text-purple-300">
+                        <div className="flex items-center justify-between">
+                          <span className="flex items-center gap-2">
+                            <GitBranch className="w-4 h-4 text-purple-600 dark:text-purple-400" />
+                            <span>🌿 SUB-TASKS ({subtasks.length})</span>
+                          </span>
+                          <span className="text-[10px] font-medium text-muted-foreground/90">
+                            Thứ tự quy trình: To Do → In Progress → Review → Testing → Done
+                          </span>
                         </div>
                       </td>
                     </tr>
-                  );
-                })}
+                    {subtasks.map(issue => {
+                      const isSubtask = isJiraSubtask(issue);
+                      const statusCat = issue.fields.status?.statusCategory?.key;
+                      const badgeClass = getWorkflowStatusBadgeClass(issue.fields.status?.name, statusCat);
+
+                      return (
+                        <tr 
+                          key={issue.key}
+                          className="hover:bg-accent/40 transition group cursor-pointer"
+                          onClick={() => setDetailIssueKey(issue.key)}
+                        >
+                          {/* Type Icon */}
+                          <td className="py-3 px-4">
+                            <IssueTypeIcon type={issue.fields.issuetype} className="w-4 h-4" />
+                          </td>
+
+                          {/* Key with Subtask indicator */}
+                          <td className="py-3 px-4 font-mono font-bold text-foreground">
+                            <div className="flex items-center gap-1.5">
+                              <span className="group-hover:text-primary transition">{issue.key}</span>
+                              {isSubtask && (
+                                <span title="Sub-task" className="inline-flex items-center">
+                                  <GitBranch className="w-3 h-3 text-purple-500 shrink-0" />
+                                </span>
+                              )}
+                            </div>
+                          </td>
+
+                          {/* Summary & Parent Breadcrumb */}
+                          <td className="py-3 px-4 font-medium text-foreground">
+                            <div className="space-y-0.5">
+                              {issue.fields.parent && (
+                                <div className="text-[10px] text-muted-foreground font-mono flex items-center gap-1">
+                                  <span>Parent:</span>
+                                  <span className="font-bold text-foreground">{issue.fields.parent.key}</span>
+                                </div>
+                              )}
+                              <div className="line-clamp-1">{issue.fields.summary}</div>
+                            </div>
+                          </td>
+
+                          {/* Status Badge formatted with workflow color */}
+                          <td className="py-3 px-4">
+                            <span className={`px-2.5 py-0.5 rounded-full font-semibold text-[11px] inline-flex items-center gap-1.5 ${badgeClass}`}>
+                              <span className="w-1.5 h-1.5 rounded-full bg-current opacity-75 shrink-0" />
+                              <span>{issue.fields.status?.name}</span>
+                            </span>
+                          </td>
+
+                          {/* Priority */}
+                          <td className="py-3 px-4 text-muted-foreground">
+                            <div className="flex items-center gap-1.5 font-medium">
+                              {issue.fields.priority?.iconUrl && (
+                                <img 
+                                  src={getJiraProxyImageUrl(issue.fields.priority.iconUrl)} 
+                                  alt="" 
+                                  className="w-3.5 h-3.5 object-contain" 
+                                  onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
+                                />
+                              )}
+                              <span>{issue.fields.priority?.name || 'Medium'}</span>
+                            </div>
+                          </td>
+
+                          {/* Assignee */}
+                          <td className="py-3 px-4">
+                            {issue.fields.assignee ? (
+                              <div className="flex items-center gap-2 text-foreground font-medium">
+                                <JiraAvatar 
+                                  avatarUrl={issue.fields.assignee.avatarUrls?.['24x24'] || issue.fields.assignee.avatarUrls?.['32x32']} 
+                                  displayName={issue.fields.assignee.displayName}
+                                  className="w-5 h-5"
+                                  sizeText="text-[9px]"
+                                />
+                                <span className="truncate max-w-[120px]">{issue.fields.assignee.displayName}</span>
+                              </div>
+                            ) : (
+                              <span className="text-muted-foreground italic">Unassigned</span>
+                            )}
+                          </td>
+
+                          {/* Story Points */}
+                          <td className="py-3 px-4 font-mono font-bold text-muted-foreground">
+                            {issue.fields.customfield_10016 ?? issue.fields.customfield_10026 ?? issue.fields.storyPoints ?? '-'}
+                          </td>
+
+                          {/* Actions */}
+                          <td className="py-3 px-4 text-right" onClick={(e) => e.stopPropagation()}>
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setLogWorkKey(issue.key);
+                                  setLogWorkSummary(issue.fields.summary);
+                                }}
+                                className="p-1.5 rounded-lg hover:bg-blue-500/10 text-muted-foreground hover:text-blue-600 transition"
+                                title="Log Work to this task"
+                              >
+                                <Clock className="w-4 h-4" />
+                              </button>
+
+                              {!isSubtask && (
+                                <button
+                                  type="button"
+                                  onClick={() => openCreateSubtask(issue.key)}
+                                  className="p-1.5 rounded-lg hover:bg-purple-500/10 text-muted-foreground hover:text-purple-600 transition"
+                                  title="Add child Sub-task"
+                                >
+                                  <GitBranch className="w-4 h-4" />
+                                </button>
+                              )}
+
+                              <button
+                                type="button"
+                                onClick={() => setDetailIssueKey(issue.key)}
+                                className="px-2 py-1 rounded-lg bg-accent hover:bg-accent/80 text-foreground font-semibold text-[11px] transition"
+                              >
+                                Details
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+
+                    {/* Standard Issues Section Header */}
+                    <tr className="bg-blue-500/10 border-y border-blue-500/25">
+                      <td colSpan={8} className="py-2.5 px-4 text-xs font-bold text-blue-700 dark:text-blue-300">
+                        <div className="flex items-center justify-between">
+                          <span className="flex items-center gap-2">
+                            <Layers className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                            <span>📋 TASKS & USER STORIES ({standardIssues.length})</span>
+                          </span>
+                          <span className="text-[10px] font-medium text-muted-foreground/90">
+                            Thứ tự quy trình: To Do → In Progress → Review → Testing → Done
+                          </span>
+                        </div>
+                      </td>
+                    </tr>
+                    {standardIssues.map(issue => {
+                      const isSubtask = isJiraSubtask(issue);
+                      const statusCat = issue.fields.status?.statusCategory?.key;
+                      const badgeClass = getWorkflowStatusBadgeClass(issue.fields.status?.name, statusCat);
+
+                      return (
+                        <tr 
+                          key={issue.key}
+                          className="hover:bg-accent/40 transition group cursor-pointer"
+                          onClick={() => setDetailIssueKey(issue.key)}
+                        >
+                          {/* Type Icon */}
+                          <td className="py-3 px-4">
+                            <IssueTypeIcon type={issue.fields.issuetype} className="w-4 h-4" />
+                          </td>
+
+                          {/* Key with Subtask indicator */}
+                          <td className="py-3 px-4 font-mono font-bold text-foreground">
+                            <div className="flex items-center gap-1.5">
+                              <span className="group-hover:text-primary transition">{issue.key}</span>
+                              {isSubtask && (
+                                <span title="Sub-task" className="inline-flex items-center">
+                                  <GitBranch className="w-3 h-3 text-purple-500 shrink-0" />
+                                </span>
+                              )}
+                            </div>
+                          </td>
+
+                          {/* Summary & Parent Breadcrumb */}
+                          <td className="py-3 px-4 font-medium text-foreground">
+                            <div className="space-y-0.5">
+                              {issue.fields.parent && (
+                                <div className="text-[10px] text-muted-foreground font-mono flex items-center gap-1">
+                                  <span>Parent:</span>
+                                  <span className="font-bold text-foreground">{issue.fields.parent.key}</span>
+                                </div>
+                              )}
+                              <div className="line-clamp-1">{issue.fields.summary}</div>
+                            </div>
+                          </td>
+
+                          {/* Status Badge formatted with workflow color */}
+                          <td className="py-3 px-4">
+                            <span className={`px-2.5 py-0.5 rounded-full font-semibold text-[11px] inline-flex items-center gap-1.5 ${badgeClass}`}>
+                              <span className="w-1.5 h-1.5 rounded-full bg-current opacity-75 shrink-0" />
+                              <span>{issue.fields.status?.name}</span>
+                            </span>
+                          </td>
+
+                          {/* Priority */}
+                          <td className="py-3 px-4 text-muted-foreground">
+                            <div className="flex items-center gap-1.5 font-medium">
+                              {issue.fields.priority?.iconUrl && (
+                                <img 
+                                  src={getJiraProxyImageUrl(issue.fields.priority.iconUrl)} 
+                                  alt="" 
+                                  className="w-3.5 h-3.5 object-contain" 
+                                  onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
+                                />
+                              )}
+                              <span>{issue.fields.priority?.name || 'Medium'}</span>
+                            </div>
+                          </td>
+
+                          {/* Assignee */}
+                          <td className="py-3 px-4">
+                            {issue.fields.assignee ? (
+                              <div className="flex items-center gap-2 text-foreground font-medium">
+                                <JiraAvatar 
+                                  avatarUrl={issue.fields.assignee.avatarUrls?.['24x24'] || issue.fields.assignee.avatarUrls?.['32x32']} 
+                                  displayName={issue.fields.assignee.displayName}
+                                  className="w-5 h-5"
+                                  sizeText="text-[9px]"
+                                />
+                                <span className="truncate max-w-[120px]">{issue.fields.assignee.displayName}</span>
+                              </div>
+                            ) : (
+                              <span className="text-muted-foreground italic">Unassigned</span>
+                            )}
+                          </td>
+
+                          {/* Story Points */}
+                          <td className="py-3 px-4 font-mono font-bold text-muted-foreground">
+                            {issue.fields.customfield_10016 ?? issue.fields.customfield_10026 ?? issue.fields.storyPoints ?? '-'}
+                          </td>
+
+                          {/* Actions */}
+                          <td className="py-3 px-4 text-right" onClick={(e) => e.stopPropagation()}>
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setLogWorkKey(issue.key);
+                                  setLogWorkSummary(issue.fields.summary);
+                                }}
+                                className="p-1.5 rounded-lg hover:bg-blue-500/10 text-muted-foreground hover:text-blue-600 transition"
+                                title="Log Work to this task"
+                              >
+                                <Clock className="w-4 h-4" />
+                              </button>
+
+                              {!isSubtask && (
+                                <button
+                                  type="button"
+                                  onClick={() => openCreateSubtask(issue.key)}
+                                  className="p-1.5 rounded-lg hover:bg-purple-500/10 text-muted-foreground hover:text-purple-600 transition"
+                                  title="Add child Sub-task"
+                                >
+                                  <GitBranch className="w-4 h-4" />
+                                </button>
+                              )}
+
+                              <button
+                                type="button"
+                                onClick={() => setDetailIssueKey(issue.key)}
+                                className="px-2 py-1 rounded-lg bg-accent hover:bg-accent/80 text-foreground font-semibold text-[11px] transition"
+                              >
+                                Details
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </>
+                ) : (
+                  sortedIssues.map((issue) => {
+                    const isSubtask = isJiraSubtask(issue);
+                    const statusCat = issue.fields.status?.statusCategory?.key;
+                    const badgeClass = getWorkflowStatusBadgeClass(issue.fields.status?.name, statusCat);
+
+                    return (
+                      <tr 
+                        key={issue.key}
+                        className="hover:bg-accent/40 transition group cursor-pointer"
+                        onClick={() => setDetailIssueKey(issue.key)}
+                      >
+                        {/* Type Icon */}
+                        <td className="py-3 px-4">
+                          <IssueTypeIcon type={issue.fields.issuetype} className="w-4 h-4" />
+                        </td>
+
+                        {/* Key with Subtask indicator */}
+                        <td className="py-3 px-4 font-mono font-bold text-foreground">
+                          <div className="flex items-center gap-1.5">
+                            <span className="group-hover:text-primary transition">{issue.key}</span>
+                            {isSubtask && (
+                              <span title="Sub-task" className="inline-flex items-center">
+                                <GitBranch className="w-3 h-3 text-purple-500 shrink-0" />
+                              </span>
+                            )}
+                          </div>
+                        </td>
+
+                        {/* Summary & Parent Breadcrumb */}
+                        <td className="py-3 px-4 font-medium text-foreground">
+                          <div className="space-y-0.5">
+                            {issue.fields.parent && (
+                              <div className="text-[10px] text-muted-foreground font-mono flex items-center gap-1">
+                                <span>Parent:</span>
+                                <span className="font-bold text-foreground">{issue.fields.parent.key}</span>
+                              </div>
+                            )}
+                            <div className="line-clamp-1">{issue.fields.summary}</div>
+                          </div>
+                        </td>
+
+                        {/* Status Badge formatted with workflow color */}
+                        <td className="py-3 px-4">
+                          <span className={`px-2.5 py-0.5 rounded-full font-semibold text-[11px] inline-flex items-center gap-1.5 ${badgeClass}`}>
+                            <span className="w-1.5 h-1.5 rounded-full bg-current opacity-75 shrink-0" />
+                            <span>{issue.fields.status?.name}</span>
+                          </span>
+                        </td>
+
+                        {/* Priority */}
+                        <td className="py-3 px-4 text-muted-foreground">
+                          <div className="flex items-center gap-1.5 font-medium">
+                            {issue.fields.priority?.iconUrl && (
+                              <img 
+                                src={getJiraProxyImageUrl(issue.fields.priority.iconUrl)} 
+                                alt="" 
+                                className="w-3.5 h-3.5 object-contain" 
+                                onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
+                              />
+                            )}
+                            <span>{issue.fields.priority?.name || 'Medium'}</span>
+                          </div>
+                        </td>
+
+                        {/* Assignee */}
+                        <td className="py-3 px-4">
+                          {issue.fields.assignee ? (
+                            <div className="flex items-center gap-2 text-foreground font-medium">
+                              <JiraAvatar 
+                                avatarUrl={issue.fields.assignee.avatarUrls?.['24x24'] || issue.fields.assignee.avatarUrls?.['32x32']} 
+                                displayName={issue.fields.assignee.displayName}
+                                className="w-5 h-5"
+                                sizeText="text-[9px]"
+                              />
+                              <span className="truncate max-w-[120px]">{issue.fields.assignee.displayName}</span>
+                            </div>
+                          ) : (
+                            <span className="text-muted-foreground italic">Unassigned</span>
+                          )}
+                        </td>
+
+                        {/* Story Points */}
+                        <td className="py-3 px-4 font-mono font-bold text-muted-foreground">
+                          {issue.fields.customfield_10016 ?? issue.fields.customfield_10026 ?? issue.fields.storyPoints ?? '-'}
+                        </td>
+
+                        {/* Actions */}
+                        <td className="py-3 px-4 text-right" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setLogWorkKey(issue.key);
+                                setLogWorkSummary(issue.fields.summary);
+                              }}
+                              className="p-1.5 rounded-lg hover:bg-blue-500/10 text-muted-foreground hover:text-blue-600 transition"
+                              title="Log Work to this task"
+                            >
+                              <Clock className="w-4 h-4" />
+                            </button>
+
+                            {!isSubtask && (
+                              <button
+                                type="button"
+                                onClick={() => openCreateSubtask(issue.key)}
+                                className="p-1.5 rounded-lg hover:bg-purple-500/10 text-muted-foreground hover:text-purple-600 transition"
+                                title="Add child Sub-task"
+                              >
+                                <GitBranch className="w-4 h-4" />
+                              </button>
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={() => setDetailIssueKey(issue.key)}
+                              className="px-2 py-1 rounded-lg bg-accent hover:bg-accent/80 text-foreground font-semibold text-[11px] transition"
+                            >
+                              Details
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
               </tbody>
             </table>
           </div>
         )}
 
         {/* Pagination Footer */}
-        {total > pageSize && (
-          <div className="p-4 border-t border-border bg-muted/20 flex flex-col sm:flex-row items-center justify-between gap-3 text-center sm:text-left text-xs text-muted-foreground">
-            <div>
-              Showing {page * pageSize + 1} to {Math.min((page + 1) * pageSize, total)} of {total} issues
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                disabled={page === 0}
-                onClick={() => setPage(p => Math.max(0, p - 1))}
-                className="px-3 py-1.5 rounded-xl border border-border bg-background hover:bg-accent disabled:opacity-40 transition flex items-center gap-1 font-semibold"
+        <div className="p-4 border-t border-border bg-muted/20 flex flex-col sm:flex-row items-center justify-between gap-3 text-center sm:text-left text-xs text-muted-foreground">
+          <div className="flex items-center gap-3 flex-wrap justify-center sm:justify-start">
+            <span>
+              Showing {total === 0 ? 0 : page * pageSize + 1} to {Math.min((page + 1) * pageSize, total)} of {total} issues
+            </span>
+            <div className="flex items-center gap-1.5 pl-2 border-l border-border">
+              <span>Hiển thị:</span>
+              <select
+                value={pageSize}
+                onChange={(e) => {
+                  setPageSize(Number(e.target.value));
+                  setPage(0);
+                }}
+                className="bg-card border border-border rounded-lg px-2 py-0.5 text-xs font-semibold focus:outline-none cursor-pointer"
               >
-                <ArrowLeft className="w-3.5 h-3.5" />
-                <span>Previous</span>
-              </button>
-
-              <span className="font-mono px-2">Page {page + 1}</span>
-
-              <button
-                type="button"
-                disabled={(page + 1) * pageSize >= total}
-                onClick={() => setPage(p => p + 1)}
-                className="px-3 py-1.5 rounded-xl border border-border bg-background hover:bg-accent disabled:opacity-40 transition flex items-center gap-1 font-semibold"
-              >
-                <span>Next</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </button>
+                <option value={25}>25 / trang</option>
+                <option value={50}>50 / trang</option>
+                <option value={100}>100 / trang</option>
+              </select>
             </div>
           </div>
-        )}
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={page === 0}
+              onClick={() => setPage(p => Math.max(0, p - 1))}
+              className="px-3 py-1.5 rounded-xl border border-border bg-background hover:bg-accent disabled:opacity-40 transition flex items-center gap-1 font-semibold"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              <span>Previous</span>
+            </button>
+
+            <span className="font-mono px-2">Page {page + 1} / {Math.max(1, Math.ceil(total / pageSize))}</span>
+
+            <button
+              type="button"
+              disabled={(page + 1) * pageSize >= total}
+              onClick={() => setPage(p => p + 1)}
+              className="px-3 py-1.5 rounded-xl border border-border bg-background hover:bg-accent disabled:opacity-40 transition flex items-center gap-1 font-semibold"
+            >
+              <span>Next</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Modals */}

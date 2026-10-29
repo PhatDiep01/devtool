@@ -23,12 +23,10 @@ import {
   ChevronsDownUp,
   Search,
   X,
-  Pin,
-  PinOff,
-  ArrowUpDown,
-  RotateCcw,
-  GripVertical,
-  ChevronLeft
+  ChevronLeft,
+  Star,
+  Edit3,
+  Trash2
 } from 'lucide-react';
 import { jiraApi, getJiraProxyImageUrl } from '../../../services/api';
 import { JiraBoard, JiraSprint, JiraIssue, JiraBoardConfiguration } from '../../../types';
@@ -36,7 +34,8 @@ import { IssueDetailModal } from '../components/IssueDetailModal';
 import { IssueTypeIcon } from '../components/IssueTypeIcon';
 import { CreateIssueModal } from '../components/CreateIssueModal';
 import { LogWorkModal } from '../components/LogWorkModal';
-import { SearchableSelect, SelectOption } from '../../../components/ui';
+import { EditStoryModal } from '../components/EditStoryModal';
+import { SearchableSelect, SelectOption, ConfirmModal } from '../../../components/ui';
 import { toast } from 'react-hot-toast';
 
 interface AssigneeBadgeProps {
@@ -107,15 +106,66 @@ const AssigneeBadge: React.FC<AssigneeBadgeProps> = ({
   );
 };
 
-export type SprintSortMode =
-  | 'jira_default'
-  | 'custom'
-  | 'id_desc'
-  | 'id_asc'
-  | 'name_asc'
-  | 'name_desc'
-  | 'date_desc'
-  | 'date_asc';
+/**
+ * Checks if a parent task is considered "completed" in sprint statistics:
+ * A task is counted as completed once it reaches 'Review', 'Ready Test', 'Release', or 'Done/Resolved'.
+ * Subtasks are completely excluded from this completion metric per sprint rules.
+ */
+export const isTaskSprintCompleted = (issue: JiraIssue): boolean => {
+  const name = (issue.fields.status?.name || '').trim().toLowerCase();
+  const cat = (issue.fields.status?.statusCategory?.key || '').trim().toLowerCase();
+
+  // 1. Done / Closed / Resolved
+  if (
+    cat === 'done' ||
+    name.includes('done') ||
+    name.includes('closed') ||
+    name.includes('complete') ||
+    name.includes('resolved') ||
+    name.includes('hoàn thành') ||
+    name.includes('đã giải quyết') ||
+    name.includes('đã sửa') ||
+    name.includes('đóng')
+  ) {
+    return true;
+  }
+
+  // 2. Release / Deploy / Staging / Ready for Release
+  if (
+    name.includes('release') ||
+    name.includes('deploy') ||
+    name.includes('staging') ||
+    name.includes('triển khai')
+  ) {
+    return true;
+  }
+
+  // 3. Ready Test / Testing / QA / QC / UAT / Ready for Test / Ready to Test
+  if (
+    name.includes('test') ||
+    name.includes('qa') ||
+    name.includes('qc') ||
+    name.includes('uat') ||
+    name.includes('kiểm thử') ||
+    name.includes('verif')
+  ) {
+    return true;
+  }
+
+  // 4. Code Review / Review / CR / PR / In Review / Under Review
+  if (
+    name.includes('review') ||
+    name.includes('cr') ||
+    name.includes('pull request') ||
+    name.includes('pr') ||
+    name.includes('đang duyệt') ||
+    name.includes('chờ duyệt')
+  ) {
+    return true;
+  }
+
+  return false;
+};
 
 export const JiraSprintsPage: React.FC = () => {
   const [boards, setBoards] = useState<JiraBoard[]>([]);
@@ -128,15 +178,7 @@ export const JiraSprintsPage: React.FC = () => {
   
   // Tabs: issues vs backlog
   const [activeView, setActiveView] = useState<'issues' | 'backlog'>('issues');
-  const [sprintStateTab, setSprintStateTab] = useState<'active' | 'future' | 'closed'>('active');
-  const [sprintSearchQuery, setSprintSearchQuery] = useState('');
-
-  // Local sprint ordering & pinning (purely client-side, zero Jira changes)
-  const [sprintSortMode, setSprintSortMode] = useState<SprintSortMode>('jira_default');
-  const [customSprintOrder, setCustomSprintOrder] = useState<number[]>([]);
-  const [pinnedSprintIds, setPinnedSprintIds] = useState<number[]>([]);
-  const [draggedSprintId, setDraggedSprintId] = useState<number | null>(null);
-  const [dragOverSprintId, setDragOverSprintId] = useState<number | null>(null);
+  const [sprintStateTab, setSprintStateTab] = useState<'active' | 'future' | 'closed' | 'all'>('active');
 
   // Filter subtasks (default: true to hide subtasks)
   const [hideSubtasks, setHideSubtasks] = useState<boolean>(true);
@@ -148,6 +190,7 @@ export const JiraSprintsPage: React.FC = () => {
 
   // Selected backlog issues to move
   const [selectedBacklogKeys, setSelectedBacklogKeys] = useState<string[]>([]);
+  const [showMoveConfirmModal, setShowMoveConfirmModal] = useState(false);
 
   // Expanded US keys for subtask hierarchy
   const [expandedStoryKeys, setExpandedStoryKeys] = useState<Record<string, boolean>>({});
@@ -157,6 +200,77 @@ export const JiraSprintsPage: React.FC = () => {
   const [createSubtaskParentKey, setCreateSubtaskParentKey] = useState<string | null>(null);
   const [logWorkKey, setLogWorkKey] = useState<string | null>(null);
   const [logWorkSummary, setLogWorkSummary] = useState<string>('');
+  const [editingStory, setEditingStory] = useState<JiraIssue | null>(null);
+  const [pendingDeleteStory, setPendingDeleteStory] = useState<JiraIssue | null>(null);
+  const [isDeletingStory, setIsDeletingStory] = useState(false);
+
+  const executeDeleteStory = async () => {
+    if (!pendingDeleteStory) return;
+    setIsDeletingStory(true);
+    try {
+      await jiraApi.deleteIssue(pendingDeleteStory.key, { deleteSubtasks: true });
+      toast.success(`Đã xóa User Story ${pendingDeleteStory.key} thành công!`);
+      if (selectedSprint) {
+        await loadSprintDetailsAndIssues(selectedSprint.id);
+      }
+    } catch (err: any) {
+      console.error(err);
+      const msg = err.response?.data?.message || err.response?.data?.error || err.message || 'Xóa thất bại';
+      toast.error(`Xóa User Story thất bại: ${typeof msg === 'string' ? msg : JSON.stringify(msg)}`);
+    } finally {
+      setIsDeletingStory(false);
+      setPendingDeleteStory(null);
+    }
+  };
+
+  // Favorite sprints persisted in localStorage
+  const [favoriteSprintIds, setFavoriteSprintIds] = useState<number[]>(() => {
+    if (typeof window === 'undefined') return [];
+    try {
+      const raw = localStorage.getItem('jira_favorite_sprint_ids');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed.map(Number);
+      }
+      const single = localStorage.getItem('jira_favorite_sprint_id');
+      if (single) {
+        return [Number(single)];
+      }
+    } catch (e) {
+      console.error(e);
+    }
+    return [];
+  });
+
+  const handleToggleFavorite = (sprintId: number) => {
+    const isFav = favoriteSprintIds.includes(sprintId);
+    let updated: number[];
+    if (isFav) {
+      updated = favoriteSprintIds.filter(id => id !== sprintId);
+      if (selectedBoardId) {
+        const currentBoardFav = localStorage.getItem(`jira_fav_sprint_board_${selectedBoardId}`);
+        if (currentBoardFav && Number(currentBoardFav) === sprintId) {
+          localStorage.removeItem(`jira_fav_sprint_board_${selectedBoardId}`);
+        }
+      }
+      toast.success('Đã bỏ sprint khỏi danh sách yêu thích');
+    } else {
+      updated = [...favoriteSprintIds, sprintId];
+      if (selectedBoardId) {
+        localStorage.setItem(`jira_fav_sprint_board_${selectedBoardId}`, String(sprintId));
+      }
+      localStorage.setItem('jira_favorite_sprint_id', String(sprintId));
+      toast.success('Đã đặt làm Sprint yêu thích! Hệ thống sẽ tự động chọn sprint này khi bạn mở trang.');
+    }
+    setFavoriteSprintIds(updated);
+    try {
+      localStorage.setItem('jira_favorite_sprint_ids', JSON.stringify(updated));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const isCurrentSprintFavorite = selectedSprint ? favoriteSprintIds.includes(selectedSprint.id) : false;
 
   useEffect(() => {
     loadBoards();
@@ -165,31 +279,6 @@ export const JiraSprintsPage: React.FC = () => {
   useEffect(() => {
     if (selectedBoardId) {
       loadSprintsForBoard(selectedBoardId);
-    }
-  }, [selectedBoardId]);
-
-  // Load custom sprint sorting & pin preferences from localStorage when board changes
-  useEffect(() => {
-    if (!selectedBoardId) {
-      setSprintSortMode('jira_default');
-      setCustomSprintOrder([]);
-      setPinnedSprintIds([]);
-      return;
-    }
-
-    try {
-      const savedMode = (localStorage.getItem(`jira_sprint_sort_mode_${selectedBoardId}`) as SprintSortMode) || 'jira_default';
-      const savedOrder = JSON.parse(localStorage.getItem(`jira_sprint_custom_order_${selectedBoardId}`) || '[]');
-      const savedPinned = JSON.parse(localStorage.getItem(`jira_sprint_pinned_${selectedBoardId}`) || '[]');
-
-      setSprintSortMode(savedMode);
-      setCustomSprintOrder(Array.isArray(savedOrder) ? savedOrder : []);
-      setPinnedSprintIds(Array.isArray(savedPinned) ? savedPinned : []);
-    } catch (err) {
-      console.warn('Failed to parse local sprint sort order:', err);
-      setSprintSortMode('jira_default');
-      setCustomSprintOrder([]);
-      setPinnedSprintIds([]);
     }
   }, [selectedBoardId]);
 
@@ -206,7 +295,17 @@ export const JiraSprintsPage: React.FC = () => {
       const boardList: JiraBoard[] = res.data || [];
       setBoards(boardList);
       if (boardList.length > 0) {
-        setSelectedBoardId(boardList[0].id);
+        let boardIdToSelect = boardList[0].id;
+        try {
+          const savedBoardId = localStorage.getItem('jira_selected_board_id');
+          if (savedBoardId) {
+            const match = boardList.find(b => b.id === Number(savedBoardId));
+            if (match) boardIdToSelect = match.id;
+          }
+        } catch (e) {
+          console.error(e);
+        }
+        setSelectedBoardId(boardIdToSelect);
       }
     } catch (err) {
       console.error(err);
@@ -218,7 +317,6 @@ export const JiraSprintsPage: React.FC = () => {
 
   const loadSprintsForBoard = async (boardId: number) => {
     setLoadingSprintData(true);
-    setSprintSearchQuery('');
     try {
       const [spRes, blRes, confRes] = await Promise.all([
         jiraApi.getSprints(boardId, 'active,future,closed').catch(() => ({ data: [] })),
@@ -231,11 +329,36 @@ export const JiraSprintsPage: React.FC = () => {
       setBacklogIssues(blRes.data || []);
       setBoardConfig(confRes?.data || null);
 
-      // Auto select active sprint or first
-      const active = allSprints.find(s => s.state === 'active') || allSprints[0] || null;
-      setSelectedSprint(active);
-      if (active?.state) {
-        setSprintStateTab(active.state as any);
+      // Check favorite sprint for this board or global favorites
+      let favSprint: JiraSprint | null = null;
+      try {
+        const boardFavId = localStorage.getItem(`jira_fav_sprint_board_${boardId}`);
+        if (boardFavId) {
+          favSprint = allSprints.find(s => s.id === Number(boardFavId)) || null;
+        }
+        if (!favSprint) {
+          const rawFavs = localStorage.getItem('jira_favorite_sprint_ids');
+          const favIds: number[] = rawFavs ? JSON.parse(rawFavs) : [];
+          favSprint = allSprints.find(s => favIds.includes(s.id)) || null;
+        }
+      } catch (e) {
+        console.error('Error reading favorite sprint:', e);
+      }
+
+      if (favSprint) {
+        setSelectedSprint(favSprint);
+        if (favSprint.state) {
+          setSprintStateTab(favSprint.state as any);
+        }
+      } else {
+        // Auto select active sprint or first
+        const active = allSprints.find(s => s.state === 'active') || allSprints[0] || null;
+        setSelectedSprint(active);
+        if (active?.state) {
+          setSprintStateTab(active.state as any);
+        } else {
+          setSprintStateTab('all');
+        }
       }
     } catch (err) {
       console.error(err);
@@ -307,6 +430,7 @@ export const JiraSprintsPage: React.FC = () => {
       toast.error(msg);
     } finally {
       setMovingIssues(false);
+      setShowMoveConfirmModal(false);
     }
   };
 
@@ -363,185 +487,109 @@ export const JiraSprintsPage: React.FC = () => {
   const estimationFieldId = boardConfig?.estimation?.field?.fieldId;
   const isTimeEstimationBoard = estimationFieldId === 'timeoriginalestimate' || (totalStoryPoints === 0 && totalEstimateSeconds > 0);
 
-  // Issues completion stats
-  const isDone = (i: JiraIssue) => i.fields.status?.statusCategory?.key === 'done';
-  const completedIssues = sprintIssues.filter(isDone).length;
-  const completedParents = parentIssues.filter(isDone).length;
-  const completedSubtasks = allSubtasks.filter(isDone).length;
-  const progressPercent = sprintIssues.length > 0 ? Math.round((completedIssues / sprintIssues.length) * 100) : 0;
+  // Sprint tasks completion stats (ONLY count parent tasks/stories, exclude subtasks)
+  // A task is considered completed when it has transitioned to Review, Ready Test, Release, or Done/Resolved
+  const completedTasks = parentIssues.filter(isTaskSprintCompleted).length;
+  const totalTasks = parentIssues.length;
+  const progressPercent = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
 
-  const filteredSprints = useMemo(() => {
-    const base = sprints.filter(s => {
-      const matchesState = s.state === sprintStateTab;
-      const q = sprintSearchQuery.trim().toLowerCase();
-      if (!q) return matchesState;
-      const matchesSearch = s.name.toLowerCase().includes(q) || String(s.id).includes(q) || (s.goal && s.goal.toLowerCase().includes(q));
-      return matchesState && matchesSearch;
+  const currentTabSprints = useMemo(() => {
+    if (sprintStateTab === 'all') return sprints;
+    return sprints.filter(s => s.state === sprintStateTab);
+  }, [sprints, sprintStateTab]);
+
+  const sortedTabSprints = useMemo(() => {
+    return [...currentTabSprints].sort((a, b) => {
+      const aFav = favoriteSprintIds.includes(a.id);
+      const bFav = favoriteSprintIds.includes(b.id);
+      if (aFav && !bFav) return -1;
+      if (!aFav && bFav) return 1;
+      return 0;
     });
+  }, [currentTabSprints, favoriteSprintIds]);
 
-    return [...base].sort((a, b) => {
-      // Pinned sprints always come first
-      const aPinned = pinnedSprintIds.includes(a.id);
-      const bPinned = pinnedSprintIds.includes(b.id);
+  const sprintSelectOptions = useMemo<SelectOption<number>[]>(() => {
+    const hasAnyFav = sortedTabSprints.some(s => favoriteSprintIds.includes(s.id));
+    return sortedTabSprints.map(s => {
+      const isFav = favoriteSprintIds.includes(s.id);
+      const hasDates = Boolean(s.startDate && s.endDate);
+      const start = s.startDate ? new Date(s.startDate).toLocaleDateString('vi-VN') : null;
+      const end = s.endDate ? new Date(s.endDate).toLocaleDateString('vi-VN') : null;
+      const datesSnippet = hasDates ? `${start} → ${end}` : 'Chưa xếp lịch';
+      const goalSnippet = s.goal ? ` • 🎯 ${s.goal}` : '';
+      const favPrefix = isFav ? '⭐ Yêu thích • ' : '';
 
-      if (aPinned && !bPinned) return -1;
-      if (!aPinned && bPinned) return 1;
-      if (aPinned && bPinned) {
-        return pinnedSprintIds.indexOf(a.id) - pinnedSprintIds.indexOf(b.id);
-      }
-
-      // Non-pinned items sort according to sprintSortMode
-      switch (sprintSortMode) {
-        case 'id_desc':
-          return b.id - a.id;
-        case 'id_asc':
-          return a.id - b.id;
-        case 'name_asc':
-          return a.name.localeCompare(b.name, 'vi', { numeric: true });
-        case 'name_desc':
-          return b.name.localeCompare(a.name, 'vi', { numeric: true });
-        case 'date_desc': {
-          const aDate = a.startDate ? new Date(a.startDate).getTime() : 0;
-          const bDate = b.startDate ? new Date(b.startDate).getTime() : 0;
-          return bDate - aDate;
-        }
-        case 'date_asc': {
-          const aDate = a.startDate ? new Date(a.startDate).getTime() : Number.MAX_SAFE_INTEGER;
-          const bDate = b.startDate ? new Date(b.startDate).getTime() : Number.MAX_SAFE_INTEGER;
-          return aDate - bDate;
-        }
-        case 'custom': {
-          const aIdx = customSprintOrder.indexOf(a.id);
-          const bIdx = customSprintOrder.indexOf(b.id);
-          if (aIdx !== -1 && bIdx !== -1) return aIdx - bIdx;
-          if (aIdx !== -1) return -1;
-          if (bIdx !== -1) return 1;
-          return sprints.indexOf(a) - sprints.indexOf(b);
-        }
-        case 'jira_default':
-        default:
-          return sprints.indexOf(a) - sprints.indexOf(b);
-      }
+      return {
+        value: s.id,
+        label: s.name,
+        sublabel: `${favPrefix}#${s.id} • ${datesSnippet}${goalSnippet}`,
+        icon: isFav ? (
+          <Star className="w-3.5 h-3.5 text-amber-500 fill-amber-500 shrink-0" />
+        ) : undefined,
+        badge: isFav ? `⭐ ${s.state?.toUpperCase()}` : s.state?.toUpperCase(),
+        badgeColor: isFav
+          ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 font-bold'
+          : s.state === 'active'
+          ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/25'
+          : s.state === 'future'
+          ? 'bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-500/25'
+          : 'bg-muted text-muted-foreground border border-border',
+        group:
+          sprintStateTab === 'all'
+            ? isFav
+              ? '⭐ Sprint Yêu thích'
+              : s.state === 'active'
+              ? 'Active Sprints'
+              : s.state === 'future'
+              ? 'Future Sprints'
+              : 'Closed Sprints'
+            : hasAnyFav
+            ? isFav
+              ? '⭐ Sprint Yêu thích'
+              : `${sprintStateTab === 'active' ? 'Active' : sprintStateTab === 'future' ? 'Future' : 'Closed'} Sprints`
+            : undefined
+      };
     });
-  }, [sprints, sprintStateTab, sprintSearchQuery, sprintSortMode, customSprintOrder, pinnedSprintIds]);
+  }, [sortedTabSprints, sprintStateTab, favoriteSprintIds]);
 
-  const updateSortMode = (mode: SprintSortMode) => {
-    setSprintSortMode(mode);
-    if (selectedBoardId) {
-      localStorage.setItem(`jira_sprint_sort_mode_${selectedBoardId}`, mode);
+  const currentIndex = sortedTabSprints.findIndex(s => s.id === selectedSprint?.id);
+  const hasPrevSprint = currentIndex > 0;
+  const hasNextSprint = currentIndex !== -1 && currentIndex < sortedTabSprints.length - 1;
+
+  const handlePrevSprint = () => {
+    if (hasPrevSprint) {
+      setSelectedSprint(sortedTabSprints[currentIndex - 1]);
     }
   };
 
-  const updateCustomOrder = (newOrder: number[]) => {
-    setCustomSprintOrder(newOrder);
-    setSprintSortMode('custom');
-    if (selectedBoardId) {
-      localStorage.setItem(`jira_sprint_custom_order_${selectedBoardId}`, JSON.stringify(newOrder));
-      localStorage.setItem(`jira_sprint_sort_mode_${selectedBoardId}`, 'custom');
+  const handleNextSprint = () => {
+    if (hasNextSprint) {
+      setSelectedSprint(sortedTabSprints[currentIndex + 1]);
     }
   };
 
-  const togglePinSprint = (sprintId: number, e?: React.MouseEvent) => {
-    if (e) {
-      e.stopPropagation();
-      e.preventDefault();
-    }
-    const isPinned = pinnedSprintIds.includes(sprintId);
-    const nextPinned = isPinned
-      ? pinnedSprintIds.filter(id => id !== sprintId)
-      : [sprintId, ...pinnedSprintIds];
-    
-    setPinnedSprintIds(nextPinned);
-    if (selectedBoardId) {
-      localStorage.setItem(`jira_sprint_pinned_${selectedBoardId}`, JSON.stringify(nextPinned));
-    }
-    toast.success(isPinned ? 'Đã bỏ ghim sprint' : 'Đã ghim sprint lên đầu');
-  };
-
-  const handleResetJiraOrder = () => {
-    setSprintSortMode('jira_default');
-    setCustomSprintOrder([]);
-    setPinnedSprintIds([]);
-    if (selectedBoardId) {
-      localStorage.removeItem(`jira_sprint_sort_mode_${selectedBoardId}`);
-      localStorage.removeItem(`jira_sprint_custom_order_${selectedBoardId}`);
-      localStorage.removeItem(`jira_sprint_pinned_${selectedBoardId}`);
-    }
-    toast.success('Đã khôi phục sắp xếp mặc định từ Jira');
-  };
-
-  const handleMoveSprint = (sprintId: number, direction: 'left' | 'right', e?: React.MouseEvent) => {
-    if (e) {
-      e.stopPropagation();
-      e.preventDefault();
-    }
-    const currentIds = filteredSprints.map(s => s.id);
-    const currentIndex = currentIds.indexOf(sprintId);
-    if (currentIndex === -1) return;
-
-    const targetIndex = direction === 'left' ? currentIndex - 1 : currentIndex + 1;
-    if (targetIndex < 0 || targetIndex >= currentIds.length) return;
-
-    const nextIds = [...currentIds];
-    const temp = nextIds[currentIndex];
-    nextIds[currentIndex] = nextIds[targetIndex];
-    nextIds[targetIndex] = temp;
-
-    updateCustomOrder(nextIds);
-  };
-
-  const handleDragStart = (e: React.DragEvent, sprintId: number) => {
-    e.dataTransfer.setData('text/plain', String(sprintId));
-    e.dataTransfer.effectAllowed = 'move';
-    setDraggedSprintId(sprintId);
-  };
-
-  const handleDragOver = (e: React.DragEvent, sprintId: number) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    if (dragOverSprintId !== sprintId) {
-      setDragOverSprintId(sprintId);
+  const handleSprintSelect = (sprintId: number) => {
+    const found = sprints.find(s => s.id === sprintId);
+    if (found) {
+      setSelectedSprint(found);
+      if (sprintStateTab !== 'all' && found.state && found.state !== sprintStateTab) {
+        setSprintStateTab(found.state as any);
+      }
     }
   };
 
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
+  const handleTabChange = (st: 'active' | 'future' | 'closed' | 'all') => {
+    setSprintStateTab(st);
+    const matched = st === 'all' ? sprints : sprints.filter(s => s.state === st);
+    if (selectedSprint && (st === 'all' || selectedSprint.state === st)) {
+      return;
+    }
+    if (matched.length > 0) {
+      setSelectedSprint(matched[0]);
+    } else {
+      setSelectedSprint(null);
+    }
   };
-
-  const handleDrop = (e: React.DragEvent, targetSprintId: number) => {
-    e.preventDefault();
-    const sourceId = draggedSprintId || Number(e.dataTransfer.getData('text/plain'));
-    setDraggedSprintId(null);
-    setDragOverSprintId(null);
-
-    if (!sourceId || sourceId === targetSprintId) return;
-
-    const currentIds = filteredSprints.map(s => s.id);
-    const sourceIndex = currentIds.indexOf(sourceId);
-    const targetIndex = currentIds.indexOf(targetSprintId);
-
-    if (sourceIndex === -1 || targetIndex === -1) return;
-
-    const nextIds = [...currentIds];
-    nextIds.splice(sourceIndex, 1);
-    nextIds.splice(targetIndex, 0, sourceId);
-
-    updateCustomOrder(nextIds);
-    toast.success('Đã cập nhật vị trí sprint!');
-  };
-
-  const handleDragEnd = () => {
-    setDraggedSprintId(null);
-    setDragOverSprintId(null);
-  };
-
-  const otherMatches = sprintSearchQuery.trim()
-    ? sprints.filter(s => {
-        if (s.state === sprintStateTab) return false;
-        const q = sprintSearchQuery.trim().toLowerCase();
-        return s.name.toLowerCase().includes(q) || String(s.id).includes(q) || (s.goal && s.goal.toLowerCase().includes(q));
-      })
-    : [];
 
   const boardOptions = useMemo<SelectOption<number>[]>(() => {
     return boards.map(b => ({
@@ -583,7 +631,14 @@ export const JiraSprintsPage: React.FC = () => {
               <SearchableSelect
                 options={boardOptions}
                 value={selectedBoardId}
-                onChange={(val) => setSelectedBoardId(val)}
+                onChange={(val) => {
+                  setSelectedBoardId(val);
+                  try {
+                    localStorage.setItem('jira_selected_board_id', String(val));
+                  } catch (e) {
+                    console.error(e);
+                  }
+                }}
                 disabled={loadingBoards || boards.length === 0}
                 placeholder="Chọn bảng agile..."
                 searchPlaceholder="Tìm kiếm board..."
@@ -607,26 +662,23 @@ export const JiraSprintsPage: React.FC = () => {
         {/* Sprint State Filter Tabs */}
         <div className="mt-6 pt-6 border-t border-border/80 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-1.5 p-1 bg-muted/50 rounded-2xl border border-border overflow-x-auto scrollbar-thin max-w-full flex-nowrap">
-            {(['active', 'future', 'closed'] as const).map((st) => (
-              <button
-                key={st}
-                type="button"
-                onClick={() => {
-                  setSprintStateTab(st);
-                  const matched = sprints.filter(s => s.state === st);
-                  if (matched.length > 0) {
-                    setSelectedSprint(matched[0]);
-                  }
-                }}
-                className={`py-1.5 px-3.5 text-xs font-bold rounded-xl capitalize transition shrink-0 whitespace-nowrap ${
-                  sprintStateTab === st
-                    ? 'bg-card text-foreground shadow-xs'
-                    : 'text-muted-foreground hover:text-foreground'
-                }`}
-              >
-                {st} Sprints ({sprints.filter(s => s.state === st).length})
-              </button>
-            ))}
+            {(['active', 'future', 'closed', 'all'] as const).map((st) => {
+              const count = st === 'all' ? sprints.length : sprints.filter(s => s.state === st).length;
+              return (
+                <button
+                  key={st}
+                  type="button"
+                  onClick={() => handleTabChange(st)}
+                  className={`py-1.5 px-3.5 text-xs font-bold rounded-xl capitalize transition shrink-0 whitespace-nowrap ${
+                    sprintStateTab === st
+                      ? 'bg-card text-foreground shadow-xs'
+                      : 'text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  {st === 'all' ? 'Tất cả' : st} Sprints ({count})
+                </button>
+              );
+            })}
           </div>
 
           {/* View Toggle: Sprint Issues vs Backlog */}
@@ -660,318 +712,167 @@ export const JiraSprintsPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Sprints Horizontal Carousel / Selector */}
-      <div className="space-y-3">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 px-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs font-bold text-foreground">
-              Danh sách {sprintStateTab} sprints ({filteredSprints.length}
-              {sprintSearchQuery ? ` / ${sprints.filter(s => s.state === sprintStateTab).length}` : ''}):
-            </span>
-            {pinnedSprintIds.length > 0 && (
-              <span className="inline-flex items-center gap-1 bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/30 text-[10px] font-bold px-2 py-0.5 rounded-full">
-                <Pin className="w-2.5 h-2.5 fill-current" />
-                {pinnedSprintIds.length} đã ghim
+      {/* Sprint Selector & Quick Navigation Bar */}
+      <div className="bg-card border border-border rounded-2xl p-3.5 sm:p-4 shadow-xs">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3.5">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-3 flex-1 min-w-0">
+            <div className="flex items-center gap-2 shrink-0">
+              <label className="text-xs font-bold text-foreground flex items-center gap-1.5 whitespace-nowrap">
+                <FolderKanban className="w-4 h-4 text-indigo-500" />
+                <span>Sprint ({sprintStateTab === 'all' ? 'Tất cả' : sprintStateTab}):</span>
+              </label>
+
+              {/* Prev / Next 1-click step buttons & Favorite Pin */}
+              <div className="flex items-center bg-muted/60 rounded-xl p-0.5 border border-border">
+                <button
+                  type="button"
+                  onClick={handlePrevSprint}
+                  disabled={!hasPrevSprint}
+                  className="p-1.5 rounded-lg hover:bg-background text-muted-foreground hover:text-foreground disabled:opacity-25 transition"
+                  title="Sprint trước (Previous)"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={handleNextSprint}
+                  disabled={!hasNextSprint}
+                  className="p-1.5 rounded-lg hover:bg-background text-muted-foreground hover:text-foreground disabled:opacity-25 transition"
+                  title="Sprint tiếp theo (Next)"
+                >
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+                <div className="w-px h-3.5 bg-border mx-0.5" />
+                <button
+                  type="button"
+                  onClick={() => selectedSprint && handleToggleFavorite(selectedSprint.id)}
+                  disabled={!selectedSprint}
+                  className={`p-1.5 rounded-lg transition ${
+                    isCurrentSprintFavorite
+                      ? 'text-amber-500 bg-amber-500/15 hover:bg-amber-500/25'
+                      : 'text-muted-foreground hover:text-amber-500 hover:bg-background'
+                  }`}
+                  title={
+                    isCurrentSprintFavorite
+                      ? 'Bỏ đánh dấu sprint yêu thích'
+                      : 'Đặt làm Sprint yêu thích (tự động chọn khi mở trang)'
+                  }
+                >
+                  <Star className={`w-3.5 h-3.5 ${isCurrentSprintFavorite ? 'fill-amber-500' : ''}`} />
+                </button>
+              </div>
+            </div>
+
+            {/* SearchableSelect for Sprints */}
+            <div className="flex-1 max-w-2xl min-w-0">
+              <SearchableSelect
+                options={sprintSelectOptions}
+                value={selectedSprint?.id ?? null}
+                onChange={(sprintId) => handleSprintSelect(sprintId)}
+                placeholder={
+                  loadingSprintData
+                    ? 'Đang tải danh sách sprints...'
+                    : currentTabSprints.length === 0
+                    ? `Không có ${sprintStateTab} sprint nào`
+                    : 'Tìm & chọn sprint...'
+                }
+                searchPlaceholder="Tìm sprint theo tên, #ID, ngày hoặc mục tiêu..."
+                searchable={true}
+                disabled={loadingSprintData || currentTabSprints.length === 0}
+                size="md"
+              />
+            </div>
+          </div>
+
+          {/* Right: Sprint state badge & counter */}
+          <div className="flex items-center gap-2.5 shrink-0 self-end sm:self-auto">
+            {selectedSprint && (
+              <span
+                className={`text-[10px] px-2.5 py-1 rounded-full font-bold uppercase tracking-wider flex items-center gap-1.5 ${
+                  selectedSprint.state === 'active'
+                    ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/25'
+                    : selectedSprint.state === 'future'
+                    ? 'bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-500/25'
+                    : 'bg-muted text-muted-foreground border border-border'
+                }`}
+              >
+                {selectedSprint.state === 'active' && (
+                  <span className="relative flex h-1.5 w-1.5">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
+                  </span>
+                )}
+                {selectedSprint.state}
               </span>
             )}
-            <span className="text-[11px] italic hidden sm:inline text-muted-foreground/75">
-              ← Kéo thả thẻ để đổi thứ tự, bấm Ghim để giữ lên đầu →
+            <span className="text-xs text-muted-foreground font-medium">
+              {currentIndex >= 0
+                ? `${currentIndex + 1} / ${currentTabSprints.length} sprints`
+                : `${currentTabSprints.length} sprints`}
             </span>
           </div>
-
-          {/* Right Toolbar: Sort Options & Search */}
-          <div className="flex flex-wrap items-center gap-2.5">
-            {/* Sort Mode Dropdown */}
-            <div className="flex items-center gap-1.5 bg-card border border-border rounded-xl px-2.5 py-1 shadow-2xs">
-              <ArrowUpDown className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-              <label htmlFor="sprint-sort-select" className="sr-only">Sắp xếp sprint</label>
-              <select
-                id="sprint-sort-select"
-                value={sprintSortMode}
-                onChange={(e) => updateSortMode(e.target.value as SprintSortMode)}
-                className="bg-transparent text-xs font-semibold text-foreground focus:outline-none cursor-pointer py-0.5 pr-1"
-                title="Chọn tiêu chí sắp xếp hiển thị (Chỉ lưu trên trình duyệt của bạn, không ảnh hưởng Jira)"
-              >
-                <option value="jira_default">Mặc định Jira</option>
-                <option value="custom">Tùy biến (Kéo thả)</option>
-                <option value="id_desc">ID: Mới nhất → Cũ nhất</option>
-                <option value="id_asc">ID: Cũ nhất → Mới nhất</option>
-                <option value="name_asc">Tên: A → Z</option>
-                <option value="name_desc">Tên: Z → A</option>
-                <option value="date_desc">Ngày: Mới nhất trước</option>
-                <option value="date_asc">Ngày: Cũ nhất trước</option>
-              </select>
-
-              {(sprintSortMode !== 'jira_default' || customSprintOrder.length > 0 || pinnedSprintIds.length > 0) && (
-                <button
-                  type="button"
-                  onClick={handleResetJiraOrder}
-                  className="ml-1 p-1 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition flex items-center gap-1 text-[10px] font-medium"
-                  title="Khôi phục sắp xếp mặc định từ Jira và xóa các ghim"
-                >
-                  <RotateCcw className="w-3 h-3 text-amber-600 dark:text-amber-400" />
-                  <span className="hidden xl:inline">Khôi phục</span>
-                </button>
-              )}
-            </div>
-
-            {/* Search Sprint Input */}
-            <div className="relative w-full sm:w-64">
-              <Search className="w-3.5 h-3.5 text-muted-foreground absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-              <input
-                type="text"
-                value={sprintSearchQuery}
-                onChange={(e) => setSprintSearchQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && filteredSprints.length > 0) {
-                    setSelectedSprint(filteredSprints[0]);
-                  }
-                }}
-                placeholder="Tìm sprint theo tên hoặc #ID..."
-                className="w-full bg-card border border-border rounded-xl pl-8 pr-8 py-1.5 text-xs focus:outline-none focus:border-primary font-medium transition shadow-2xs placeholder:text-muted-foreground/70"
-              />
-              {sprintSearchQuery && (
-                <button
-                  type="button"
-                  onClick={() => setSprintSearchQuery('')}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-1 rounded-md hover:bg-muted transition"
-                  title="Xóa tìm kiếm"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              )}
-            </div>
-          </div>
         </div>
-
-        {filteredSprints.length > 0 ? (
-          <div className="flex items-stretch gap-3 overflow-x-auto pb-3 pt-1 px-0.5 scrollbar-thin">
-            {filteredSprints.map((s, index) => {
-              const isSelected = selectedSprint?.id === s.id;
-              const isPinned = pinnedSprintIds.includes(s.id);
-              const isDragging = draggedSprintId === s.id;
-              const isDragOver = dragOverSprintId === s.id && draggedSprintId !== s.id;
-              const hasDates = Boolean(s.startDate && s.endDate);
-              const startDateStr = s.startDate ? new Date(s.startDate).toLocaleDateString('vi-VN') : null;
-              const endDateStr = s.endDate ? new Date(s.endDate).toLocaleDateString('vi-VN') : null;
-
-              return (
-                <div
-                  key={s.id}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => setSelectedSprint(s)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      setSelectedSprint(s);
-                    }
-                  }}
-                  draggable
-                  onDragStart={(e) => handleDragStart(e, s.id)}
-                  onDragOver={(e) => handleDragOver(e, s.id)}
-                  onDragLeave={handleDragLeave}
-                  onDrop={(e) => handleDrop(e, s.id)}
-                  onDragEnd={handleDragEnd}
-                  className={`p-4 rounded-2xl border text-left min-w-[280px] sm:min-w-[320px] max-w-[360px] transition-all flex flex-col justify-between shrink-0 relative group cursor-pointer select-none ${
-                    isDragging
-                      ? 'opacity-40 border-dashed border-primary scale-[0.98]'
-                      : isDragOver
-                      ? 'border-primary ring-2 ring-primary/40 bg-primary/10 shadow-lg scale-[1.02]'
-                      : isSelected
-                      ? 'bg-card border-primary ring-2 ring-primary/25 shadow-md scale-[1.01]'
-                      : isPinned
-                      ? 'bg-card/90 border-amber-500/50 hover:border-amber-500 shadow-2xs hover:shadow-xs'
-                      : 'bg-card/70 hover:bg-card border-border hover:border-primary/50 shadow-2xs hover:shadow-xs'
-                  }`}
-                  title={`${s.name} (Kéo thả để sắp xếp vị trí)`}
-                >
-                  {/* Top Bar: Drag Handle, Sprint ID, Action Buttons & State Badge */}
-                  <div className="flex items-center justify-between gap-1.5 w-full mb-2">
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      {/* Drag handle */}
-                      <span
-                        className="cursor-grab active:cursor-grabbing p-1 -ml-1 text-muted-foreground/40 hover:text-foreground transition rounded"
-                        title="Kéo thả để thay đổi vị trí"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <GripVertical className="w-3.5 h-3.5" />
-                      </span>
-
-                      <span className="font-mono text-xs font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-500/10 border border-indigo-500/20 px-2 py-0.5 rounded-lg shrink-0">
-                        #{s.id}
-                      </span>
-
-                      {isPinned && (
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/30 flex items-center gap-0.5 shrink-0">
-                          <Pin className="w-2.5 h-2.5 fill-current" />
-                          <span className="hidden sm:inline">Ghim</span>
-                        </span>
-                      )}
-                    </div>
-
-                    {/* Right tools: Move Left, Move Right, Pin toggle & State badge */}
-                    <div className="flex items-center gap-1 shrink-0">
-                      {/* Quick Move Left / Right buttons */}
-                      <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity bg-muted/60 rounded-lg p-0.5 border border-border/60">
-                        <button
-                          type="button"
-                          onClick={(e) => handleMoveSprint(s.id, 'left', e)}
-                          disabled={index === 0}
-                          className="p-1 rounded hover:bg-background text-muted-foreground hover:text-foreground disabled:opacity-20 transition"
-                          title="Dịch sang trái"
-                        >
-                          <ChevronLeft className="w-3 h-3" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => handleMoveSprint(s.id, 'right', e)}
-                          disabled={index === filteredSprints.length - 1}
-                          className="p-1 rounded hover:bg-background text-muted-foreground hover:text-foreground disabled:opacity-20 transition"
-                          title="Dịch sang phải"
-                        >
-                          <ChevronRight className="w-3 h-3" />
-                        </button>
-                      </div>
-
-                      {/* Pin / Unpin Button */}
-                      <button
-                        type="button"
-                        onClick={(e) => togglePinSprint(s.id, e)}
-                        className={`p-1.5 rounded-lg transition border ${
-                          isPinned
-                            ? 'bg-amber-500/15 border-amber-500/30 text-amber-600 dark:text-amber-400 hover:bg-amber-500/25'
-                            : 'border-transparent text-muted-foreground/40 hover:text-foreground hover:bg-muted'
-                        }`}
-                        title={isPinned ? 'Bỏ ghim sprint này' : 'Ghim sprint này lên đầu danh sách'}
-                      >
-                        <Pin className={`w-3.5 h-3.5 ${isPinned ? 'fill-current' : ''}`} />
-                      </button>
-
-                      {/* State badge */}
-                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider flex items-center gap-1 ${
-                        s.state === 'active'
-                          ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/25'
-                          : s.state === 'future'
-                          ? 'bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-500/25'
-                          : 'bg-muted text-muted-foreground border border-border'
-                      }`}>
-                        {s.state === 'active' && (
-                          <span className="relative flex h-1.5 w-1.5">
-                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                            <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
-                          </span>
-                        )}
-                        {s.state}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Sprint Name - Full display up to 2 lines without clipping */}
-                  <div className="my-1 flex-1">
-                    <h3 className="font-bold text-xs sm:text-sm text-foreground leading-snug line-clamp-2 group-hover:text-primary transition" title={s.name}>
-                      {s.name}
-                    </h3>
-
-                    {/* Goal snippet if available */}
-                    {s.goal && (
-                      <p className="text-[11px] text-muted-foreground/90 italic line-clamp-1 mt-1.5">
-                        🎯 {s.goal}
-                      </p>
-                    )}
-                  </div>
-
-                  {/* Bottom: Date Range & Selection Indicator */}
-                  <div className="mt-3 pt-2.5 border-t border-border/60 flex items-center justify-between text-[11px] text-muted-foreground w-full">
-                    <div className="flex items-center gap-1.5 truncate">
-                      <Calendar className="w-3.5 h-3.5 text-primary/70 shrink-0" />
-                      <span className="font-medium truncate">
-                        {hasDates ? `${startDateStr} → ${endDateStr}` : 'Chưa xếp lịch'}
-                      </span>
-                    </div>
-
-                    {isSelected ? (
-                      <span className="text-[10px] font-bold text-primary flex items-center gap-1 shrink-0 bg-primary/10 px-2 py-0.5 rounded-md">
-                        <Check className="w-3 h-3" /> Đang chọn
-                      </span>
-                    ) : (
-                      <span className="text-[10px] text-muted-foreground/60 group-hover:text-primary group-hover:translate-x-0.5 transition shrink-0 flex items-center">
-                        <ChevronRight className="w-3.5 h-3.5" />
-                      </span>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="bg-card border border-dashed border-border rounded-2xl p-6 text-center space-y-3">
-            <p className="text-xs text-muted-foreground">
-              {sprintSearchQuery ? (
-                <>
-                  Không tìm thấy sprint nào ở trạng thái <span className="font-bold uppercase text-foreground">{sprintStateTab}</span> khớp với từ khóa <span className="font-bold text-foreground">"{sprintSearchQuery}"</span>.
-                </>
-              ) : (
-                <>Không có sprint nào ở trạng thái <span className="font-bold uppercase text-foreground">{sprintStateTab}</span>.</>
-              )}
-            </p>
-
-            {otherMatches.length > 0 && (
-              <div className="pt-1 flex flex-wrap items-center justify-center gap-2">
-                <span className="text-xs text-muted-foreground">Gợi ý tìm thấy ở trạng thái khác:</span>
-                {Array.from(new Set(otherMatches.map(s => s.state))).map(st => {
-                  const count = otherMatches.filter(s => s.state === st).length;
-                  return (
-                    <button
-                      key={st}
-                      type="button"
-                      onClick={() => {
-                        setSprintStateTab(st as any);
-                        const first = otherMatches.find(s => s.state === st);
-                        if (first) setSelectedSprint(first);
-                      }}
-                      className="px-2.5 py-1 text-[11px] font-bold rounded-lg bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-500/20 transition capitalize"
-                    >
-                      Chuyển sang {st} sprints ({count})
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-
-            {sprintSearchQuery && (
-              <div>
-                <button
-                  type="button"
-                  onClick={() => setSprintSearchQuery('')}
-                  className="text-xs font-bold text-primary hover:underline"
-                >
-                  Xóa bộ lọc tìm kiếm
-                </button>
-              </div>
-            )}
-          </div>
-        )}
       </div>
+
+      {/* Empty State when no sprint selected */}
+      {!selectedSprint && !loadingSprintData && (
+        <div className="bg-card border border-dashed border-border rounded-3xl p-8 text-center space-y-2">
+          <FolderKanban className="w-10 h-10 text-muted-foreground/40 mx-auto" />
+          <h3 className="text-sm font-bold text-foreground">Chưa chọn sprint</h3>
+          <p className="text-xs text-muted-foreground max-w-md mx-auto">
+            {currentTabSprints.length === 0
+              ? `Không có sprint nào ở trạng thái "${sprintStateTab}". Hãy chọn tab khác hoặc chọn Board khác.`
+              : 'Vui lòng chọn một sprint từ danh sách trên để xem chi tiết và danh sách công việc.'}
+          </p>
+          {sprintStateTab !== 'all' && sprints.length > 0 && currentTabSprints.length === 0 && (
+            <button
+              type="button"
+              onClick={() => handleTabChange('all')}
+              className="mt-2 text-xs font-bold text-primary hover:underline inline-flex items-center gap-1"
+            >
+              Xem tất cả ({sprints.length}) sprints
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Selected Sprint Details Banner */}
       {selectedSprint && (
         <div className="bg-gradient-to-r from-indigo-500/10 via-background to-card border border-indigo-500/20 rounded-3xl p-5 sm:p-6 shadow-sm">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div className="space-y-1.5 min-w-0">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-mono text-xs font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-500/15 px-2.5 py-0.5 rounded-md">
                   Sprint #{selectedSprint.id}
                 </span>
                 <h2 className="text-base sm:text-xl font-bold text-foreground">
                   {selectedSprint.name}
                 </h2>
+                <button
+                  type="button"
+                  onClick={() => handleToggleFavorite(selectedSprint.id)}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-bold transition border ${
+                    isCurrentSprintFavorite
+                      ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30 hover:bg-amber-500/25 shadow-2xs'
+                      : 'bg-background hover:bg-muted text-muted-foreground hover:text-foreground border-border'
+                  }`}
+                  title={
+                    isCurrentSprintFavorite
+                      ? 'Bỏ yêu thích sprint này'
+                      : 'Đặt làm Sprint yêu thích (tự động chọn khi mở trang)'
+                  }
+                >
+                  <Star className={`w-3.5 h-3.5 ${isCurrentSprintFavorite ? 'fill-amber-500 text-amber-500' : ''}`} />
+                  <span>{isCurrentSprintFavorite ? 'Sprint yêu thích' : 'Đặt làm yêu thích'}</span>
+                </button>
               </div>
               {selectedSprint.goal && (
                 <p className="text-xs sm:text-sm text-foreground/80 italic font-medium">
                   🎯 Goal: "{selectedSprint.goal}"
                 </p>
               )}
-              <div className="flex items-center gap-3 text-xs text-muted-foreground pt-1">
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground pt-1">
+                <Calendar className="w-3.5 h-3.5 text-indigo-500/80 shrink-0" />
                 <span>
                   Duration: {selectedSprint.startDate ? new Date(selectedSprint.startDate).toLocaleDateString() : 'N/A'} → {selectedSprint.endDate ? new Date(selectedSprint.endDate).toLocaleDateString() : 'N/A'}
                 </span>
@@ -999,17 +900,17 @@ export const JiraSprintsPage: React.FC = () => {
                 )}
               </div>
               <div>
-                <span className="text-[11px] font-semibold text-muted-foreground block">Issues Completed</span>
+                <span className="text-[11px] font-semibold text-muted-foreground block">Tasks Completed</span>
                 <div className="flex items-baseline gap-1.5">
                   <span className="text-lg font-bold text-foreground">
-                    {completedIssues}/{sprintIssues.length}
+                    {completedTasks}/{totalTasks}
                   </span>
                   <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
                     ({progressPercent}%)
                   </span>
                 </div>
-                <span className="text-[10px] text-muted-foreground block font-medium">
-                  {completedParents}/{parentIssues.length} stories • {completedSubtasks}/{allSubtasks.length} subtasks
+                <span className="text-[10px] text-muted-foreground block font-medium" title="Tính các task đạt trạng thái Review, Ready Test, Release hoặc Done/Resolved">
+                  Review / Test / Release ({completedTasks}/{totalTasks} tasks)
                 </span>
               </div>
               <div className="w-24 sm:w-28 space-y-1">
@@ -1212,6 +1113,26 @@ export const JiraSprintsPage: React.FC = () => {
                           >
                             <Plus className="w-3.5 h-3.5" />
                           </button>
+
+                          {/* Quick Action: Edit User Story */}
+                          <button
+                            type="button"
+                            onClick={() => setEditingStory(story)}
+                            className="p-1.5 rounded-lg hover:bg-amber-500/10 text-muted-foreground hover:text-amber-600 transition"
+                            title="Chỉnh sửa User Story"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                          </button>
+
+                          {/* Quick Action: Delete User Story */}
+                          <button
+                            type="button"
+                            onClick={() => setPendingDeleteStory(story)}
+                            className="p-1.5 rounded-lg hover:bg-rose-500/10 text-muted-foreground hover:text-rose-600 transition"
+                            title="Xóa User Story"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
                         </div>
                       </div>
                     </div>
@@ -1341,7 +1262,7 @@ export const JiraSprintsPage: React.FC = () => {
             {selectedSprint && (
               <button
                 type="button"
-                onClick={handleMoveBacklogToSprint}
+                onClick={() => setShowMoveConfirmModal(true)}
                 disabled={movingIssues || selectedBacklogKeys.length === 0}
                 className="px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground font-bold text-xs rounded-xl transition shadow-sm disabled:opacity-40 flex items-center gap-2"
               >
@@ -1473,6 +1394,63 @@ export const JiraSprintsPage: React.FC = () => {
           }}
         />
       )}
+
+      {/* Confirm Move Backlog to Sprint Modal */}
+      <ConfirmModal
+        isOpen={showMoveConfirmModal}
+        title="Xác nhận chuyển công việc vào Sprint"
+        description={
+          <span>
+            Bạn có chắc chắn muốn chuyển <strong className="text-foreground">{selectedBacklogKeys.length} công việc</strong> đã chọn ({selectedBacklogKeys.join(', ')}) từ Backlog vào sprint <span className="font-semibold text-primary">"{selectedSprint?.name}"</span> không?
+          </span>
+        }
+        confirmText={`Chuyển ${selectedBacklogKeys.length} công việc`}
+        cancelText="Hủy bỏ"
+        variant="primary"
+        loading={movingIssues}
+        onConfirm={handleMoveBacklogToSprint}
+        onClose={() => {
+          if (!movingIssues) setShowMoveConfirmModal(false);
+        }}
+      />
+
+      {/* Edit Story Modal */}
+      {editingStory && (
+        <EditStoryModal
+          isOpen={Boolean(editingStory)}
+          onClose={() => setEditingStory(null)}
+          story={editingStory}
+          onSuccess={() => {
+            if (selectedSprint) {
+              loadSprintDetailsAndIssues(selectedSprint.id);
+            }
+          }}
+        />
+      )}
+
+      {/* Confirm Delete Story Modal */}
+      <ConfirmModal
+        isOpen={Boolean(pendingDeleteStory)}
+        title={`Xác nhận xóa User Story ${pendingDeleteStory?.key || ''}`}
+        description={(
+          <div className="space-y-2">
+            <p>
+              Bạn có chắc chắn muốn xóa User Story <strong className="text-foreground">{pendingDeleteStory?.key}</strong>: <span className="font-semibold text-foreground">{pendingDeleteStory?.fields.summary}</span> không?
+            </p>
+            <p className="text-[11px] text-rose-500 dark:text-rose-400 font-medium bg-rose-500/10 p-2.5 rounded-xl border border-rose-500/20">
+              ⚠️ Cảnh báo: Thao tác này sẽ xóa vĩnh viễn User Story và tất cả các Subtask con liên quan trên Jira!
+            </p>
+          </div>
+        )}
+        confirmText="Xác nhận xóa vĩnh viễn"
+        cancelText="Hủy bỏ"
+        variant="destructive"
+        loading={isDeletingStory}
+        onConfirm={executeDeleteStory}
+        onClose={() => {
+          if (!isDeletingStory) setPendingDeleteStory(null);
+        }}
+      />
     </div>
   );
 };

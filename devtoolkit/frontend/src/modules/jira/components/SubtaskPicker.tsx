@@ -9,10 +9,12 @@ import {
   RefreshCw, 
   Layers,
   ChevronDown,
-  Check
+  Check,
+  Calendar
 } from 'lucide-react';
 import { jiraApi } from '../../../services/api';
 import { JiraAssignedSubtask } from '../../../types';
+import { extractSubtaskEstimates } from '../../../utils/jiraTime';
 
 interface SubtaskPickerProps {
   selectedKey: string;
@@ -29,19 +31,30 @@ export const SubtaskPicker: React.FC<SubtaskPickerProps> = ({
   const [loading, setLoading] = useState(false);
   // Default filter: 'active' (Todo / In Progress) as requested by user to avoid done/reject
   const [statusFilter, setStatusFilter] = useState<'active' | 'all' | 'done'>('active');
+  const [dueTodayOnly, setDueTodayOnly] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [isOpen, setIsOpen] = useState(false);
 
+  const getTodayStr = (): string => {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+  const todayStr = getTodayStr();
+
   useEffect(() => {
     loadSubtasks();
-  }, [statusFilter]);
+  }, [statusFilter, dueTodayOnly]);
 
   const loadSubtasks = async () => {
     setLoading(true);
     try {
       const res = await jiraApi.getMySubtasks({
         status: statusFilter,
-        limit: 50
+        limit: 50,
+        dueToday: dueTodayOnly || undefined
       });
       setSubtasks(res.data || []);
     } catch (err) {
@@ -52,6 +65,11 @@ export const SubtaskPicker: React.FC<SubtaskPickerProps> = ({
   };
 
   const filteredSubtasks = subtasks.filter((st) => {
+    if (dueTodayOnly) {
+      if (!st.duedate || !st.duedate.startsWith(todayStr)) {
+        return false;
+      }
+    }
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase().trim();
     return (
@@ -61,6 +79,8 @@ export const SubtaskPicker: React.FC<SubtaskPickerProps> = ({
       (st.parent && st.parent.summary.toLowerCase().includes(q))
     );
   });
+
+  const dueTodayCount = subtasks.filter(st => st.duedate && st.duedate.startsWith(todayStr)).length;
 
   const selectedSubtask = subtasks.find(s => s.key === selectedKey);
   const isSelectedDone = selectedSubtask?.status?.statusCategory?.key === 'done' || 
@@ -129,6 +149,27 @@ export const SubtaskPicker: React.FC<SubtaskPickerProps> = ({
         </div>
       </div>
 
+      {/* Due Today Filter Checkbox */}
+      <div className="flex items-center justify-between p-2 rounded-xl bg-accent/40 border border-border/80">
+        <label className="inline-flex items-center gap-2 cursor-pointer select-none text-xs text-foreground group">
+          <input
+            type="checkbox"
+            checked={dueTodayOnly}
+            onChange={(e) => setDueTodayOnly(e.target.checked)}
+            className="w-4 h-4 rounded border-border text-primary focus:ring-primary cursor-pointer mt-0.5 shrink-0"
+          />
+          <span className="font-semibold flex items-center gap-1.5 group-hover:text-primary transition-colors">
+            <Calendar className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+            <span>Ngày hôm nay (Chỉ lọc subtask có Due Date là hôm nay)</span>
+          </span>
+        </label>
+        {dueTodayCount > 0 ? (
+          <span className="text-[10px] px-2 py-0.5 rounded-full font-mono font-bold bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/20 shrink-0">
+            {dueTodayCount} hôm nay
+          </span>
+        ) : null}
+      </div>
+
       {/* Main Select Button / Trigger */}
       <div className="relative">
         <div
@@ -144,16 +185,36 @@ export const SubtaskPicker: React.FC<SubtaskPickerProps> = ({
 
             {selectedKey ? (
               <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <span className="font-mono font-bold text-xs text-foreground bg-accent px-2 py-0.5 rounded">
                     {selectedKey}
                   </span>
                   {selectedSubtask && (
-                    <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded border ${
-                      getStatusBadgeClass(selectedSubtask.status?.statusCategory?.key, selectedSubtask.status?.name)
-                    }`}>
-                      {selectedSubtask.status?.name}
-                    </span>
+                    <>
+                      <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded border ${
+                        getStatusBadgeClass(selectedSubtask.status?.statusCategory?.key, selectedSubtask.status?.name)
+                      }`}>
+                        {selectedSubtask.status?.name}
+                      </span>
+                      {selectedSubtask.duedate && (
+                        <span className={`text-[10px] font-mono px-1.5 py-0.2 rounded border flex items-center gap-1 ${
+                          selectedSubtask.duedate.startsWith(todayStr)
+                            ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30 font-bold'
+                            : 'bg-muted text-muted-foreground border-border'
+                        }`}>
+                          <Calendar className="w-2.5 h-2.5 text-amber-500" />
+                          <span>Due: {selectedSubtask.duedate}{selectedSubtask.duedate.startsWith(todayStr) ? ' (Hôm nay)' : ''}</span>
+                        </span>
+                      )}
+                      {(() => {
+                        const ests = extractSubtaskEstimates(selectedSubtask.timetracking);
+                        return ests.estimate ? (
+                          <span className="text-[10px] font-mono font-bold text-amber-600 dark:text-amber-400 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.2 rounded shrink-0" title="Thời gian ước tính (Estimate)">
+                            Est: {ests.estimate}
+                          </span>
+                        ) : null;
+                      })()}
+                    </>
                   )}
                 </div>
                 <p className="text-xs text-muted-foreground truncate mt-0.5">
@@ -164,7 +225,7 @@ export const SubtaskPicker: React.FC<SubtaskPickerProps> = ({
               <div className="text-xs text-muted-foreground">
                 <span className="font-medium">Nhấn để chọn Subtask được giao cho bạn...</span>
                 <span className="block text-[10px] opacity-70">
-                  {loading ? 'Đang tải danh sách subtask...' : `${subtasks.length} subtask phù hợp`}
+                  {loading ? 'Đang tải danh sách subtask...' : `${filteredSubtasks.length} subtask phù hợp`}
                 </span>
               </div>
             )}
@@ -206,11 +267,22 @@ export const SubtaskPicker: React.FC<SubtaskPickerProps> = ({
                   <AlertTriangle className="w-5 h-5 text-amber-500 mx-auto opacity-70" />
                   <p className="font-medium text-foreground">Không tìm thấy subtask nào</p>
                   <p className="text-[11px]">
-                    {statusFilter === 'active'
+                    {dueTodayOnly
+                      ? 'Không có Subtask nào có hạn chót (Due date) được đặt là hôm nay.'
+                      : statusFilter === 'active'
                       ? 'Bạn hiện không có subtask nào ở trạng thái Todo/In Progress. Bạn có thể bấm tab "Tất cả" phía trên để xem các subtask khác.'
                       : 'Không có subtask nào khớp với từ khóa tìm kiếm.'}
                   </p>
-                  {statusFilter === 'active' && (
+                  {dueTodayOnly && (
+                    <button
+                      type="button"
+                      onClick={() => setDueTodayOnly(false)}
+                      className="px-3 py-1 bg-amber-500/20 text-amber-700 dark:text-amber-300 hover:bg-amber-500/30 text-[11px] font-bold rounded-lg mt-1"
+                    >
+                      Bỏ lọc hôm nay
+                    </button>
+                  )}
+                  {!dueTodayOnly && statusFilter === 'active' && (
                     <button
                       type="button"
                       onClick={() => setStatusFilter('all')}
@@ -251,11 +323,31 @@ export const SubtaskPicker: React.FC<SubtaskPickerProps> = ({
                           </span>
                         </div>
 
-                        {st.timetracking?.timeSpent && (
-                          <span className="text-[10px] font-mono font-semibold text-muted-foreground bg-muted px-1.5 py-0.2 rounded shrink-0">
-                            Logged: {st.timetracking.timeSpent}
-                          </span>
-                        )}
+                        <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
+                          {st.duedate && (
+                            <span className={`text-[10px] font-mono font-semibold px-1.5 py-0.2 rounded border flex items-center gap-1 ${
+                              st.duedate.startsWith(todayStr)
+                                ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30 font-bold'
+                                : 'bg-muted text-muted-foreground border-border'
+                            }`}>
+                              <Calendar className="w-2.5 h-2.5 text-amber-500" />
+                              <span>Due: {st.duedate}{st.duedate.startsWith(todayStr) ? ' (Hôm nay)' : ''}</span>
+                            </span>
+                          )}
+                          {st.timetracking?.timeSpent && (
+                            <span className="text-[10px] font-mono font-semibold text-muted-foreground bg-muted px-1.5 py-0.2 rounded shrink-0">
+                              Logged: {st.timetracking.timeSpent}
+                            </span>
+                          )}
+                          {(() => {
+                            const ests = extractSubtaskEstimates(st.timetracking);
+                            return ests.estimate ? (
+                              <span className="text-[10px] font-mono font-bold text-amber-600 dark:text-amber-400 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.2 rounded shrink-0" title="Thời gian ước tính (Estimate)">
+                                Est: {ests.estimate}
+                              </span>
+                            ) : null;
+                          })()}
+                        </div>
                       </div>
 
                       {/* Summary */}

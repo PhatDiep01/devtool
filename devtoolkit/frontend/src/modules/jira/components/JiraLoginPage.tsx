@@ -9,20 +9,33 @@ import {
   Eye, 
   EyeOff, 
   Globe, 
-  Building2, 
-  Sparkles,
   Info,
   ArrowRight,
   ArrowLeft,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  RefreshCw,
+  ShieldCheck
 } from 'lucide-react';
 import { useJiraAuthStore } from '../../../stores/jira-auth.store';
+import { getRememberedAuth, clearRememberedAuth } from '../../../utils/auth-crypto';
 import { toast } from 'react-hot-toast';
 
 export const JiraLoginPage: React.FC<{ onSuccess?: () => void }> = ({ onSuccess }) => {
   const navigate = useNavigate();
-  const { login, isLoading, error, clearError, configInfo, fetchConfigInfo } = useJiraAuthStore();
+  const { 
+    login, 
+    isLoading, 
+    error, 
+    clearError, 
+    configInfo, 
+    fetchConfigInfo,
+    isCaptcha,
+    captchaId,
+    captchaImage,
+    fetchCaptcha,
+    resetCaptcha
+  } = useJiraAuthStore();
 
   const [authTab, setAuthTab] = useState<'token' | 'basic'>('token');
   const [baseUrl, setBaseUrl] = useState('https://task.ascvn.com.vn');
@@ -37,18 +50,44 @@ export const JiraLoginPage: React.FC<{ onSuccess?: () => void }> = ({ onSuccess 
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
 
+  // CAPTCHA State
+  const [captchaResponse, setCaptchaResponse] = useState('');
+  const [isRefreshingCaptcha, setIsRefreshingCaptcha] = useState(false);
+  const captchaInputRef = React.useRef<HTMLInputElement>(null);
+
   // Common options
   const [rememberMe, setRememberMe] = useState(false);
+  const [rememberedUser, setRememberedUser] = useState<{
+    username?: string;
+    authTab: 'token' | 'basic';
+  } | null>(null);
 
   useEffect(() => {
     fetchConfigInfo();
   }, [fetchConfigInfo]);
 
+  // Load remembered credentials from localStorage (de-obfuscated securely client-side)
   useEffect(() => {
-    if (configInfo?.configuredBaseUrl) {
+    const saved = getRememberedAuth();
+    if (saved) {
+      setRememberMe(true);
+      if (saved.baseUrl) setBaseUrl(saved.baseUrl);
+      if (saved.authTab) setAuthTab(saved.authTab);
+      if (saved.username) setUsername(saved.username);
+      if (saved.password) setPassword(saved.password);
+      if (saved.apiToken) setApiToken(saved.apiToken);
+      setRememberedUser({
+        username: saved.username,
+        authTab: saved.authTab
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (configInfo?.configuredBaseUrl && !getRememberedAuth()?.baseUrl) {
       setBaseUrl(configInfo.configuredBaseUrl);
     }
-    if (configInfo?.authType === 'basic') {
+    if (configInfo?.authType === 'basic' && !getRememberedAuth()?.authTab) {
       setAuthTab('basic');
     }
   }, [configInfo]);
@@ -57,8 +96,34 @@ export const JiraLoginPage: React.FC<{ onSuccess?: () => void }> = ({ onSuccess 
     if (authTab !== tab) {
       setAuthTab(tab);
       clearError();
+      if (tab === 'token') {
+        resetCaptcha();
+        setCaptchaResponse('');
+      }
     }
   };
+
+  const handleRefreshCaptcha = async () => {
+    setIsRefreshingCaptcha(true);
+    setCaptchaResponse('');
+    try {
+      await fetchCaptcha(baseUrl);
+    } finally {
+      setIsRefreshingCaptcha(false);
+      setTimeout(() => {
+        captchaInputRef.current?.focus();
+      }, 100);
+    }
+  };
+
+  // Auto focus captcha input when captcha challenge is triggered
+  useEffect(() => {
+    if (isCaptcha && captchaInputRef.current) {
+      setTimeout(() => {
+        captchaInputRef.current?.focus();
+      }, 150);
+    }
+  }, [isCaptcha, captchaImage]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -90,7 +155,7 @@ export const JiraLoginPage: React.FC<{ onSuccess?: () => void }> = ({ onSuccess 
       if (success) {
         toast.success(
           rememberMe 
-            ? 'Đã kết nối Jira và lưu thông tin vào SQLite!' 
+            ? 'Đã kết nối Jira và ghi nhớ phiên an toàn trên trình duyệt!' 
             : 'Đã kết nối Jira (phiên làm việc tạm thời)!'
         );
         onSuccess?.();
@@ -104,6 +169,11 @@ export const JiraLoginPage: React.FC<{ onSuccess?: () => void }> = ({ onSuccess 
         toast.error('Vui lòng nhập Mật khẩu Jira');
         return;
       }
+      if (isCaptcha && !captchaResponse.trim()) {
+        toast.error('Vui lòng nhập mã bảo vệ (CAPTCHA)');
+        captchaInputRef.current?.focus();
+        return;
+      }
 
       const success = await login({
         baseUrl: cleanUrl,
@@ -112,31 +182,37 @@ export const JiraLoginPage: React.FC<{ onSuccess?: () => void }> = ({ onSuccess 
         password: password.trim(),
         apiToken: password.trim(),
         authType: 'basic',
-        rememberMe
+        rememberMe,
+        captchaId: captchaId || undefined,
+        captchaResponse: captchaResponse.trim() || undefined
       });
 
       if (success) {
         toast.success(
           rememberMe 
-            ? 'Đã kết nối Jira bằng tài khoản và lưu thông tin vào SQLite!' 
+            ? 'Đã kết nối Jira bằng tài khoản và ghi nhớ phiên an toàn trên trình duyệt!' 
             : 'Đã kết nối Jira (phiên làm việc tạm thời)!'
         );
         onSuccess?.();
+      } else {
+        if (isCaptcha || captchaImage) {
+          setCaptchaResponse('');
+          setTimeout(() => {
+            captchaInputRef.current?.focus();
+          }, 150);
+        }
       }
     }
   };
 
-  const handleWorkspaceFastPass = async () => {
-    clearError();
-    const success = await login({
-      useWorkspace: true,
-      rememberMe: true
-    });
-
-    if (success) {
-      toast.success('Đã kết nối thành công với Jira qua thông tin lưu trên máy!');
-      onSuccess?.();
-    }
+  const handleClearRemembered = () => {
+    clearRememberedAuth();
+    setRememberedUser(null);
+    setRememberMe(false);
+    setUsername('');
+    setPassword('');
+    setApiToken('');
+    toast.success('Đã xóa thông tin ghi nhớ trên trình duyệt này');
   };
 
   return (
@@ -195,24 +271,25 @@ export const JiraLoginPage: React.FC<{ onSuccess?: () => void }> = ({ onSuccess 
           </button>
         </div>
 
-        {/* Workspace Fast-Pass Notice if already configured on server */}
-        {configInfo?.hasConfigured && (
-          <div className="p-3.5 rounded-2xl bg-blue-500/10 border border-blue-500/20 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
-            <div className="flex items-center gap-2.5 text-blue-600 dark:text-blue-400">
-              <Building2 className="w-4 h-4 shrink-0" />
-              <div>
-                <span className="font-bold">Đã có thông tin lưu trên máy: </span>
-                <span className="font-mono">{configInfo.configuredBaseUrl}</span>
+        {/* Remembered Account Notice from Encrypted LocalStorage */}
+        {rememberedUser && (
+          <div className="p-3.5 rounded-2xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-2.5 text-blue-600 dark:text-blue-400 min-w-0">
+              <ShieldCheck className="w-4 h-4 shrink-0 text-blue-500" />
+              <div className="min-w-0">
+                <span className="font-bold">Đã ghi nhớ trên trình duyệt này: </span>
+                <span className="font-mono font-semibold truncate">{rememberedUser.username || 'API Token'}</span>
+                <span className="text-[11px] text-muted-foreground block">
+                  (Dữ liệu mã hóa bảo mật trên máy khách, tuyệt đối không lưu thông tin đăng nhập vào SQLite máy chủ)
+                </span>
               </div>
             </div>
             <button
               type="button"
-              onClick={handleWorkspaceFastPass}
-              disabled={isLoading}
-              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl transition text-xs flex items-center gap-1.5 shadow-sm shrink-0 disabled:opacity-50"
+              onClick={handleClearRemembered}
+              className="text-[11px] text-muted-foreground hover:text-destructive underline shrink-0 font-medium"
             >
-              <Sparkles className="w-3.5 h-3.5" />
-              <span>Đăng Nhập Nhanh</span>
+              Xóa ghi nhớ
             </button>
           </div>
         )}
@@ -233,13 +310,24 @@ export const JiraLoginPage: React.FC<{ onSuccess?: () => void }> = ({ onSuccess 
               <p>{error}</p>
               {error.toLowerCase().includes('captcha') && (
                 <div className="flex flex-wrap gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (authTab !== 'basic') handleSwitchTab('basic');
+                      handleRefreshCaptcha();
+                    }}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-600 text-white hover:bg-amber-700 text-[11px] font-bold transition shadow-xs"
+                  >
+                    <ShieldCheck className="w-3 h-3" />
+                    <span>Nhập CAPTCHA trực tiếp bên dưới</span>
+                  </button>
                   <a
                     href={`${baseUrl.replace(/\/+$/, '')}/login.jsp`}
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-destructive text-white hover:bg-destructive/90 text-[11px] font-bold transition shadow-xs"
                   >
-                    <span>Mở Jira giải CAPTCHA</span>
+                    <span>Mở web Jira</span>
                     <ExternalLink className="w-3 h-3" />
                   </a>
                   <button
@@ -389,10 +477,85 @@ export const JiraLoginPage: React.FC<{ onSuccess?: () => void }> = ({ onSuccess 
                   Xác thực trực tiếp bằng tài khoản qua giao thức Basic Auth an toàn.
                 </p>
               </div>
+
+              {/* CAPTCHA CHALLENGE SECTION */}
+              {(isCaptcha || captchaImage) ? (
+                <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 space-y-3 animate-in fade-in slide-in-from-top-2 duration-200">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-amber-700 dark:text-amber-300 flex items-center gap-1.5">
+                      <ShieldCheck className="w-4 h-4 text-amber-500" />
+                      <span>Mã Bảo Vệ Xác Thực (CAPTCHA)</span>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={handleRefreshCaptcha}
+                      disabled={isRefreshingCaptcha}
+                      className="text-[11px] text-amber-700 dark:text-amber-300 hover:underline flex items-center gap-1 font-semibold disabled:opacity-50"
+                      title="Tải lại hình ảnh mã CAPTCHA mới"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${isRefreshingCaptcha ? 'animate-spin' : ''}`} />
+                      <span>Đổi mã khác</span>
+                    </button>
+                  </div>
+
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">
+                    Máy chủ Jira yêu cầu vượt qua bước kiểm tra CAPTCHA. Vui lòng nhập các ký tự hiển thị trong hình ảnh bên dưới:
+                  </p>
+
+                  {/* CAPTCHA Image Preview */}
+                  <div className="flex items-center justify-center p-2 rounded-xl bg-white dark:bg-zinc-900 border border-border shadow-xs min-h-[58px] relative overflow-hidden select-none">
+                    {captchaImage ? (
+                      <img
+                        src={captchaImage}
+                        alt="Jira Security CAPTCHA"
+                        className="h-12 object-contain filter contrast-125 rounded cursor-pointer transition hover:opacity-90"
+                        onClick={handleRefreshCaptcha}
+                        title="Bấm vào hình để đổi mã khác"
+                      />
+                    ) : (
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Đang tải mã CAPTCHA từ máy chủ...</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* CAPTCHA Text Input */}
+                  <div className="space-y-1">
+                    <input
+                      ref={captchaInputRef}
+                      type="text"
+                      value={captchaResponse}
+                      onChange={(e) => setCaptchaResponse(e.target.value)}
+                      placeholder="Nhập mã chữ/số trong ảnh..."
+                      autoComplete="off"
+                      autoCorrect="off"
+                      autoCapitalize="off"
+                      spellCheck="false"
+                      required
+                      className="w-full bg-background border border-amber-500/40 focus:border-amber-500 rounded-xl px-3.5 py-2.5 text-sm font-mono tracking-widest text-center uppercase font-bold focus:outline-none focus:ring-2 focus:ring-amber-500/20 transition"
+                    />
+                    <p className="text-[10px] text-muted-foreground text-center">
+                      Không phân biệt chữ hoa, chữ thường • Bấm hình ảnh để đổi mã nếu khó nhìn
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex justify-end pt-0.5">
+                  <button
+                    type="button"
+                    onClick={handleRefreshCaptcha}
+                    className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1 font-medium"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                    <span>Tài khoản đang bị khóa CAPTCHA? Bấm lấy mã xác thực</span>
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
-          {/* Remember Me Checkbox with Explicit Clear Storage Description */}
+          {/* Remember Me Checkbox with Explicit Storage Description */}
           <div className="p-3.5 rounded-2xl bg-accent/40 border border-border/60 space-y-1.5">
             <label className="flex items-start gap-2.5 cursor-pointer select-none">
               <input
@@ -402,15 +565,15 @@ export const JiraLoginPage: React.FC<{ onSuccess?: () => void }> = ({ onSuccess 
                 className="w-4 h-4 rounded border-border text-primary focus:ring-primary cursor-pointer mt-0.5 shrink-0"
               />
               <div className="text-xs">
-                <span className="font-bold text-foreground">Keep me signed in on this device</span>
+                <span className="font-bold text-foreground">Ghi nhớ đăng nhập trên trình duyệt này</span>
                 <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
                   {rememberMe ? (
                     <span className="text-emerald-600 dark:text-emerald-400 font-medium">
-                      ✓ Đã chọn: Thông tin sẽ được lưu vào SQLite trên máy và duy trì phiên đăng nhập (30 ngày).
+                      ✓ Đã chọn: Thông tin được mã hóa bảo mật trên trình duyệt này (LocalStorage) và duy trì phiên 30 ngày (tuyệt đối không lưu vào SQLite máy chủ).
                     </span>
                   ) : (
                     <span>
-                      Không chọn: Thông tin <b>sẽ KHÔNG lưu vào SQLite</b>. Phiên đăng nhập sẽ kết thúc sau 1 phiên làm việc (8 tiếng) hoặc khi đóng trình duyệt.
+                      Không chọn: Thông tin <b>không lưu vào LocalStorage hay SQLite</b>. Phiên đăng nhập sẽ chỉ lưu tạm trong tab này và hết hạn sau phiên làm việc (8 tiếng).
                     </span>
                   )}
                 </p>

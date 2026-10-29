@@ -31,15 +31,22 @@ import {
   Link as LinkIcon,
   User,
   ShieldAlert,
-  ClipboardPaste
+  ClipboardPaste,
+  Code,
+  Copy,
+  Terminal,
+  FileCode,
+  ListOrdered
 } from 'lucide-react';
-import { bugsApi, resolveApiUrl } from '../../../services/api';
-import { BugItem, BugStats, BugType, BugStatus, BugSeverity, BugAttachment } from '../../../types';
-import { SearchableSelect, SelectOption } from '../../../components/ui';
+import { bugsApi, bugAnnotationsApi, resolveApiUrl } from '../../../services/api';
+import { BugItem, BugStats, BugType, BugStatus, BugSeverity, BugAttachment, AnnotationItem } from '../../../types';
+import { SearchableSelect, SelectOption, ConfirmModal } from '../../../components/ui';
 import toast from 'react-hot-toast';
 import { AnnotationModal, AnnotationOverlayView } from '../components/BugAnnotation';
 import { generateMarkdownSummary } from '../components/BugAnnotation/mathUtils';
+import { getAnnotationTypeName } from '../components/BugAnnotation/constants';
 import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd';
+import { useSearchParams } from 'react-router-dom';
 
 const KANBAN_COLUMNS: { id: BugStatus; label: string; dotColor: string }[] = [
   { id: 'todo', label: 'Chưa Fix', dotColor: 'bg-amber-500' },
@@ -98,6 +105,7 @@ export interface FormAttachmentItem {
   file?: File;
   previewUrl?: string;
   isPending?: boolean;
+  annotations?: AnnotationItem[];
 }
 
 export const BugTrackerPage: React.FC = () => {
@@ -127,18 +135,59 @@ export const BugTrackerPage: React.FC = () => {
   const [editingBug, setEditingBug] = useState<BugItem | null>(null);
   const [selectedBug, setSelectedBug] = useState<BugItem | null>(null);
 
+  // Delete bug confirmation modal state
+  const [bugToDelete, setBugToDelete] = useState<BugItem | null>(null);
+  const [isDeletingBug, setIsDeletingBug] = useState(false);
+
+  // Status transition confirmation modal state
+  const [pendingStatusChange, setPendingStatusChange] = useState<{
+    bugId: number;
+    bugTitle?: string;
+    fromStatus: BugStatus;
+    toStatus: BugStatus;
+  } | null>(null);
+  const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
+
+  // Unsaved changes confirmation modal state
+  const [showUnsavedConfirmModal, setShowUnsavedConfirmModal] = useState(false);
+
   // Bug Annotation Modal state
   const [annotationModalState, setAnnotationModalState] = useState<{
     isOpen: boolean;
     bug: BugItem | null;
     imageId?: string;
+    isFormDraft?: boolean;
+    customImages?: Array<{
+      id: string;
+      url: string;
+      originalName: string;
+      annotations?: AnnotationItem[];
+      isPending?: boolean;
+    }>;
   }>({
     isOpen: false,
     bug: null,
   });
 
-  // Image preview lightbox
-  const [previewImage, setPreviewImage] = useState<{ url: string; title: string; imageId?: string } | null>(null);
+  // Image preview lightbox & Annotation viewer
+  const [previewImage, setPreviewImage] = useState<{
+    url: string;
+    title: string;
+    imageId?: string;
+    bug?: BugItem | null;
+    annotations?: AnnotationItem[];
+  } | null>(null);
+  const [isNotesSidebarOpen, setIsNotesSidebarOpen] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 768);
+  const [hoveredAnnotationId, setHoveredAnnotationId] = useState<string | null>(null);
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
+
+  const handleCopyMarkdownForPreview = (title: string, annotations: AnnotationItem[]) => {
+    if (annotations.length === 0) return;
+    const md = generateMarkdownSummary(title, undefined, title, annotations);
+    navigator.clipboard.writeText(md)
+      .then(() => toast.success('Đã sao chép bảng ghi chú vào Clipboard'))
+      .catch(() => toast.error('Không thể sao chép bảng ghi chú'));
+  };
 
   // Form inputs
   const [formTitle, setFormTitle] = useState('');
@@ -148,6 +197,8 @@ export const BugTrackerPage: React.FC = () => {
   const [formStatus, setFormStatus] = useState<BugStatus>('todo');
   const [formSeverity, setFormSeverity] = useState<BugSeverity>('medium');
   const [formDescription, setFormDescription] = useState('');
+  const [formPayload, setFormPayload] = useState('');
+  const [isPayloadCopied, setIsPayloadCopied] = useState(false);
   const [formFixSolution, setFormFixSolution] = useState('');
   const [formCreatedBy, setFormCreatedBy] = useState('QA/QC');
   const [formAssignedTo, setFormAssignedTo] = useState('');
@@ -155,6 +206,24 @@ export const BugTrackerPage: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [searchParams] = useSearchParams();
+
+  // Listen to searchParams (e.g. from global search command palette)
+  useEffect(() => {
+    const bugId = searchParams.get('bugId');
+    if (bugId) {
+      bugsApi.getById(Number(bugId)).then(res => {
+        if (res.data) {
+          setSelectedBug(res.data);
+          setIsDetailModalOpen(true);
+        }
+      }).catch(() => {});
+    }
+    const q = searchParams.get('search') || searchParams.get('q');
+    if (q) {
+      setSearchQuery(q);
+    }
+  }, [searchParams]);
 
   useEffect(() => {
     loadBugs();
@@ -162,14 +231,14 @@ export const BugTrackerPage: React.FC = () => {
 
   // Prevent background scroll when any modal or lightbox is open
   useEffect(() => {
-    if (isFormModalOpen || isDetailModalOpen || previewImage || annotationModalState.isOpen) {
+    if (isFormModalOpen || isDetailModalOpen || previewImage || annotationModalState.isOpen || bugToDelete || showUnsavedConfirmModal) {
       const originalOverflow = document.body.style.overflow;
       document.body.style.overflow = 'hidden';
       return () => {
         document.body.style.overflow = originalOverflow;
       };
     }
-  }, [isFormModalOpen, isDetailModalOpen, !!previewImage, annotationModalState.isOpen]);
+  }, [isFormModalOpen, isDetailModalOpen, !!previewImage, annotationModalState.isOpen, !!bugToDelete, showUnsavedConfirmModal]);
 
   const loadBugs = async () => {
     setLoading(true);
@@ -210,6 +279,9 @@ export const BugTrackerPage: React.FC = () => {
     md += `- **Loại:** ${bug.type} | **Mức độ:** ${bug.severity} | **Trạng thái:** ${getStatusLabel(bug.status)}\n`;
     md += `- **Người tạo:** ${bug.created_by || 'QA/QC'} | **Phụ trách:** ${bug.assigned_to || 'Chưa gán'}\n\n`;
     md += `## Mô tả lỗi & Các bước tái hiện\n${bug.description || '_Không có mô tả_'}\n\n`;
+    if (bug.payload) {
+      md += `## Dữ liệu / Payload tái hiện lỗi\n\`\`\`json\n${bug.payload}\n\`\`\`\n\n`;
+    }
     if (bug.fix_solution) {
       md += `## Hướng dẫn / Giải pháp fix\n${bug.fix_solution}\n\n`;
     }
@@ -227,6 +299,39 @@ export const BugTrackerPage: React.FC = () => {
       .catch(() => toast.error('Không thể sao chép Markdown'));
   };
 
+  const handlePayloadKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const target = e.currentTarget;
+      const start = target.selectionStart;
+      const end = target.selectionEnd;
+      const val = target.value;
+      const spaces = '  ';
+      target.value = val.substring(0, start) + spaces + val.substring(end);
+      target.selectionStart = target.selectionEnd = start + spaces.length;
+      setFormPayload(target.value);
+    }
+  };
+
+  const handleFormatPayloadJson = () => {
+    if (!formPayload.trim()) return;
+    try {
+      const parsed = JSON.parse(formPayload.trim());
+      setFormPayload(JSON.stringify(parsed, null, 2));
+      toast.success('Đã định dạng JSON!');
+    } catch {
+      toast.error('Nội dung không phải cú pháp JSON hợp lệ');
+    }
+  };
+
+  const handleCopyFormPayload = () => {
+    if (!formPayload) return;
+    navigator.clipboard.writeText(formPayload);
+    setIsPayloadCopied(true);
+    toast.success('Đã sao chép payload!');
+    setTimeout(() => setIsPayloadCopied(false), 2000);
+  };
+
   const safeBugs = useMemo(() => Array.isArray(bugs) ? bugs : [], [bugs]);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
@@ -242,8 +347,116 @@ export const BugTrackerPage: React.FC = () => {
       }
     });
     setFormAttachments([]);
+    setEditingBug(null);
+    setShowUnsavedConfirmModal(false);
     setIsFormModalOpen(false);
   };
+
+  // Determine if form has unsaved modifications
+  const isFormDirty = useMemo(() => {
+    if (!isFormModalOpen) return false;
+
+    if (!editingBug) {
+      // In create mode: dirty if user entered any content or attached any file
+      return Boolean(
+        formTitle.trim() ||
+        formUsKey.trim() ||
+        formUsLink.trim() ||
+        formDescription.trim() ||
+        formPayload.trim() ||
+        formFixSolution.trim() ||
+        formAssignedTo.trim() ||
+        formType !== 'FE' ||
+        formStatus !== 'todo' ||
+        formSeverity !== 'medium' ||
+        formAttachments.length > 0
+      );
+    }
+
+    // In edit mode: compare with initial editingBug properties
+    const titleChanged = formTitle.trim() !== (editingBug.title || '').trim();
+    const usKeyChanged = formUsKey.trim() !== (editingBug.us_key || '').trim();
+    const usLinkChanged = formUsLink.trim() !== (editingBug.us_link || '').trim();
+    const typeChanged = formType !== editingBug.type;
+    const statusChanged = formStatus !== editingBug.status;
+    const severityChanged = formSeverity !== editingBug.severity;
+    const descChanged = formDescription.trim() !== (editingBug.description || '').trim();
+    const payloadChanged = formPayload.trim() !== (editingBug.payload || '').trim();
+    const fixChanged = formFixSolution.trim() !== (editingBug.fix_solution || '').trim();
+    const createdByChanged = formCreatedBy.trim() !== (editingBug.created_by || 'QA/QC').trim();
+    const assignedToChanged = formAssignedTo.trim() !== (editingBug.assigned_to || '').trim();
+
+    // Check attachments: if any pending files, new annotations, or count differs
+    const hasPending = formAttachments.some(a => a.isPending);
+    const hasDraftAnnotations = formAttachments.some(a => a.annotations && a.annotations.length > 0);
+    const initialAttachments = editingBug.attachments || [];
+    const attachmentsChanged = hasPending || hasDraftAnnotations || formAttachments.length !== initialAttachments.length;
+
+    return (
+      titleChanged ||
+      usKeyChanged ||
+      usLinkChanged ||
+      typeChanged ||
+      statusChanged ||
+      severityChanged ||
+      descChanged ||
+      payloadChanged ||
+      fixChanged ||
+      createdByChanged ||
+      assignedToChanged ||
+      attachmentsChanged
+    );
+  }, [
+    isFormModalOpen,
+    editingBug,
+    formTitle,
+    formUsKey,
+    formUsLink,
+    formType,
+    formStatus,
+    formSeverity,
+    formDescription,
+    formPayload,
+    formFixSolution,
+    formCreatedBy,
+    formAssignedTo,
+    formAttachments
+  ]);
+
+  const handleRequestCloseForm = () => {
+    if (isSubmitting) return;
+    if (isFormDirty) {
+      setShowUnsavedConfirmModal(true);
+    } else {
+      closeFormModal();
+    }
+  };
+
+  const handleDiscardAndClose = () => {
+    setShowUnsavedConfirmModal(false);
+    closeFormModal();
+  };
+
+  // Global Escape key listener to handle nested modal dismissing
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (showUnsavedConfirmModal) {
+          setShowUnsavedConfirmModal(false);
+        } else if (bugToDelete) {
+          if (!isDeletingBug) setBugToDelete(null);
+        } else if (previewImage) {
+          setPreviewImage(null);
+        } else if (isFormModalOpen) {
+          handleRequestCloseForm();
+        } else if (isDetailModalOpen) {
+          setIsDetailModalOpen(false);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [showUnsavedConfirmModal, bugToDelete, isDeletingBug, previewImage, isFormModalOpen, isDetailModalOpen, isFormDirty]);
 
   const openCreateModal = () => {
     setEditingBug(null);
@@ -254,10 +467,12 @@ export const BugTrackerPage: React.FC = () => {
     setFormStatus('todo');
     setFormSeverity('medium');
     setFormDescription('');
+    setFormPayload('');
     setFormFixSolution('');
     setFormCreatedBy('QA/QC');
     setFormAssignedTo('');
     setFormAttachments([]);
+    setShowUnsavedConfirmModal(false);
     setIsFormModalOpen(true);
   };
 
@@ -270,16 +485,57 @@ export const BugTrackerPage: React.FC = () => {
     setFormStatus(bug.status);
     setFormSeverity(bug.severity);
     setFormDescription(bug.description || '');
+    setFormPayload(bug.payload || '');
     setFormFixSolution(bug.fix_solution || '');
     setFormCreatedBy(bug.created_by || 'QA/QC');
     setFormAssignedTo(bug.assigned_to || '');
-    setFormAttachments((bug.attachments || []).map(a => ({ ...a, isPending: false })));
+    setFormAttachments((bug.attachments || []).map(a => ({
+      ...a,
+      isPending: false,
+      annotations: bug.annotations?.[a.id || a.filename]?.annotations || []
+    })));
+    setShowUnsavedConfirmModal(false);
     setIsFormModalOpen(true);
   };
 
   const openDetailModal = (bug: BugItem) => {
     setSelectedBug(bug);
     setIsDetailModalOpen(true);
+  };
+
+  const handleOpenFormAnnotation = (targetAttachmentId?: string) => {
+    const images = formAttachments.filter(a => a.isImage);
+    if (images.length === 0) {
+      toast.error('Chưa có hình ảnh nào để đánh dấu');
+      return;
+    }
+
+    const customImages = images.map(a => ({
+      id: a.id,
+      url: a.isPending ? a.previewUrl! : resolveApiUrl(a.url!),
+      originalName: a.originalName,
+      annotations: a.annotations || [],
+      isPending: a.isPending
+    }));
+
+    const initialId = targetAttachmentId || images[0].id;
+
+    setAnnotationModalState({
+      isOpen: true,
+      bug: editingBug || null,
+      imageId: initialId,
+      isFormDraft: true,
+      customImages
+    });
+  };
+
+  const handleSaveFormAnnotations = (imageId: string, annotations: AnnotationItem[]) => {
+    setFormAttachments(prev => prev.map(a => {
+      if (a.id === imageId || (a.filename && a.filename === imageId)) {
+        return { ...a, annotations };
+      }
+      return a;
+    }));
   };
 
   const [isDragOver, setIsDragOver] = useState(false);
@@ -312,7 +568,8 @@ export const BugTrackerPage: React.FC = () => {
         isImage: isImg,
         file,
         previewUrl,
-        isPending: true
+        isPending: true,
+        annotations: []
       });
     }
 
@@ -360,7 +617,7 @@ export const BugTrackerPage: React.FC = () => {
 
   // Global paste handler when Form Modal is active
   useEffect(() => {
-    if (!isFormModalOpen) return;
+    if (!isFormModalOpen || annotationModalState.isOpen) return;
 
     const handleWindowPaste = (e: ClipboardEvent) => {
       const images = extractImagesFromDataTransfer(e.clipboardData);
@@ -374,7 +631,7 @@ export const BugTrackerPage: React.FC = () => {
     return () => {
       window.removeEventListener('paste', handleWindowPaste);
     };
-  }, [isFormModalOpen]);
+  }, [isFormModalOpen, annotationModalState.isOpen]);
 
   const handlePasteButtonClick = async () => {
     try {
@@ -449,11 +706,10 @@ export const BugTrackerPage: React.FC = () => {
     });
   };
 
-  const handleSubmitForm = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const executeSubmitBug = async (): Promise<boolean> => {
     if (!formTitle.trim()) {
       toast.error('Vui lòng nhập tiêu đề bug');
-      return;
+      return false;
     }
 
     setIsSubmitting(true);
@@ -479,17 +735,20 @@ export const BugTrackerPage: React.FC = () => {
       }
 
       // 2. ONLY upload pending attachments to server when the form is submitted
-      const uploadedAttachments: BugAttachment[] = [];
+      const uploadedAttachments: { attachment: BugAttachment; annotations?: AnnotationItem[] }[] = [];
       for (let i = 0; i < pendingAttachments.length; i++) {
         const pending = pendingAttachments[i];
         const formData = new FormData();
         formData.append('file', pending.file!);
 
         const res = await bugsApi.upload(formData);
-        uploadedAttachments.push(res.data);
+        uploadedAttachments.push({
+          attachment: res.data,
+          annotations: pending.annotations
+        });
       }
 
-      const finalAttachments = [...savedAttachments, ...uploadedAttachments];
+      const finalAttachments = [...savedAttachments, ...uploadedAttachments.map(u => u.attachment)];
 
       const payload = {
         title: formTitle.trim(),
@@ -499,18 +758,56 @@ export const BugTrackerPage: React.FC = () => {
         status: formStatus,
         severity: formSeverity,
         description: formDescription,
+        payload: formPayload.trim() || null,
         fix_solution: formFixSolution,
         attachments: finalAttachments,
         created_by: formCreatedBy.trim() || null,
         assigned_to: formAssignedTo.trim() || null
       };
 
+      let targetBugId: number | null = null;
       if (editingBug) {
         await bugsApi.update(editingBug.id, payload);
+        targetBugId = editingBug.id;
         toast.success('Đã cập nhật thông tin bug!');
       } else {
-        await bugsApi.create(payload);
+        const createRes = await bugsApi.create(payload);
+        targetBugId = createRes.data?.id;
         toast.success('Đã ghi nhận bug mới thành công!');
+      }
+
+      // 3. Save annotations for newly uploaded attachments
+      if (targetBugId) {
+        for (const u of uploadedAttachments) {
+          if (u.annotations && u.annotations.length > 0) {
+            const imgId = u.attachment.id || u.attachment.filename;
+            try {
+              await bugAnnotationsApi.save(targetBugId, imgId, {
+                annotations: u.annotations
+              });
+            } catch (annErr) {
+              console.error('Failed to save annotations for uploaded image:', imgId, annErr);
+            }
+          }
+        }
+
+        // 4. Save annotations for existing attachments in edit mode
+        if (editingBug) {
+          for (const item of formAttachments) {
+            if (!item.isPending && item.annotations) {
+              const imgId = item.id || item.filename;
+              if (imgId) {
+                try {
+                  await bugAnnotationsApi.save(targetBugId, imgId, {
+                    annotations: item.annotations
+                  });
+                } catch (annErr) {
+                  console.error('Failed to save annotations for existing image:', imgId, annErr);
+                }
+              }
+            }
+          }
+        }
       }
 
       // Revoke temporary preview object URLs
@@ -520,26 +817,72 @@ export const BugTrackerPage: React.FC = () => {
         }
       });
 
-      setIsFormModalOpen(false);
+      closeFormModal();
       loadBugs();
+      return true;
     } catch (err: any) {
       toast.error('Lưu thông tin thất bại: ' + (err.response?.data?.error || err.message));
+      return false;
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const handleQuickStatusChange = async (bugId: number, nextStatus: BugStatus, e?: React.MouseEvent) => {
+  const handleSubmitForm = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await executeSubmitBug();
+  };
+
+  const handleSaveAndClose = async () => {
+    if (!formTitle.trim()) {
+      toast.error('Vui lòng nhập tiêu đề bug để lưu');
+      setShowUnsavedConfirmModal(false);
+      return;
+    }
+    const success = await executeSubmitBug();
+    if (success) {
+      setShowUnsavedConfirmModal(false);
+    }
+  };
+
+  const getStatusLabel = (st: BugStatus) => {
+    switch (st) {
+      case 'todo': return 'Chưa fix';
+      case 'in_progress': return 'Đang fix';
+      case 'resolved': return 'Đã fix';
+      default: return st;
+    }
+  };
+
+  const handleQuickStatusChange = (bugId: number, nextStatus: BugStatus, e?: React.MouseEvent) => {
     e?.stopPropagation();
+    const bug = bugs.find(b => b.id === bugId) || (selectedBug?.id === bugId ? selectedBug : null);
+    if (!bug || bug.status === nextStatus) return;
+
+    setPendingStatusChange({
+      bugId,
+      bugTitle: bug.title,
+      fromStatus: bug.status,
+      toStatus: nextStatus
+    });
+  };
+
+  const executeStatusChange = async () => {
+    if (!pendingStatusChange) return;
+    const { bugId, toStatus } = pendingStatusChange;
+    setIsUpdatingStatus(true);
     try {
-      await bugsApi.updateStatus(bugId, nextStatus);
-      toast.success(`Đã chuyển trạng thái sang ${getStatusLabel(nextStatus)}`);
+      await bugsApi.updateStatus(bugId, toStatus);
+      toast.success(`Đã chuyển trạng thái sang "${getStatusLabel(toStatus)}"`);
       loadBugs();
       if (selectedBug && selectedBug.id === bugId) {
-        setSelectedBug(prev => prev ? { ...prev, status: nextStatus } : null);
+        setSelectedBug(prev => prev ? { ...prev, status: toStatus } : null);
       }
     } catch (err: any) {
       toast.error('Không thể đổi trạng thái');
+    } finally {
+      setIsUpdatingStatus(false);
+      setPendingStatusChange(null);
     }
   };
 
@@ -554,20 +897,7 @@ export const BugTrackerPage: React.FC = () => {
     if (!['todo', 'in_progress', 'resolved'].includes(targetStatus)) return;
 
     if (destination.droppableId !== source.droppableId) {
-      // Optimistic UI update
-      setBugs(prev => prev.map(b => b.id === bugId ? { ...b, status: targetStatus } : b));
-      if (selectedBug && selectedBug.id === bugId) {
-        setSelectedBug(prev => prev ? { ...prev, status: targetStatus } : null);
-      }
-
-      try {
-        await bugsApi.updateStatus(bugId, targetStatus);
-        toast.success(`Đã chuyển bug #${bugId} sang "${getStatusLabel(targetStatus)}"`);
-        loadBugs();
-      } catch (err: any) {
-        toast.error('Không thể đổi trạng thái bug');
-        loadBugs();
-      }
+      handleQuickStatusChange(bugId, targetStatus);
     } else {
       // Reorder locally within same column
       const columnBugs = safeBugs.filter(b => b.status === source.droppableId);
@@ -582,28 +912,27 @@ export const BugTrackerPage: React.FC = () => {
     }
   };
 
-  const handleDeleteBug = async (bugId: number, e?: React.MouseEvent) => {
+  const confirmDeleteBug = (bug: BugItem, e?: React.MouseEvent) => {
     e?.stopPropagation();
-    if (!window.confirm('Bạn có chắc chắn muốn xóa bug này khỏi danh sách?')) return;
-
-    try {
-      await bugsApi.delete(bugId);
-      toast.success('Đã xóa bug!');
-      loadBugs();
-      if (selectedBug && selectedBug.id === bugId) {
-        setIsDetailModalOpen(false);
-      }
-    } catch (err: any) {
-      toast.error('Xóa bug thất bại');
-    }
+    setBugToDelete(bug);
   };
 
-  const getStatusLabel = (st: BugStatus) => {
-    switch (st) {
-      case 'todo': return 'Chưa fix';
-      case 'in_progress': return 'Đang fix';
-      case 'resolved': return 'Đã fix';
-      default: return st;
+  const executeDeleteBug = async () => {
+    if (!bugToDelete) return;
+    setIsDeletingBug(true);
+    try {
+      await bugsApi.delete(bugToDelete.id);
+      toast.success('Đã xóa bug thành công!');
+      if (selectedBug && selectedBug.id === bugToDelete.id) {
+        setIsDetailModalOpen(false);
+        setSelectedBug(null);
+      }
+      setBugToDelete(null);
+      loadBugs();
+    } catch (err: any) {
+      toast.error('Xóa bug thất bại: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setIsDeletingBug(false);
     }
   };
 
@@ -714,10 +1043,10 @@ export const BugTrackerPage: React.FC = () => {
           <div className="flex items-center gap-3">
             <button
               onClick={openCreateModal}
-              className="px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-bold rounded-xl transition shadow-sm flex items-center gap-2"
+              className="px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-semibold rounded-xl transition shadow-xs flex items-center gap-2"
             >
               <Plus className="w-4 h-4" />
-              <span>Báo Cáo Bug Mới</span>
+              <span>Báo cáo bug mới</span>
             </button>
             <button
               onClick={loadBugs}
@@ -733,33 +1062,33 @@ export const BugTrackerPage: React.FC = () => {
         {/* Statistics Metric Strip */}
         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3 mt-6 pt-6 border-t border-border/80">
           <div className="bg-muted/30 border border-border/60 rounded-2xl p-3.5 space-y-1">
-            <span className="text-[11px] font-semibold text-muted-foreground block">Tổng số Bug</span>
-            <span className="text-xl font-black text-foreground font-mono">{stats.total}</span>
+            <span className="text-xs font-medium text-muted-foreground block">Tổng số Bug</span>
+            <span className="text-xl font-bold text-foreground tabular-nums">{stats.total}</span>
           </div>
 
           <div className="bg-amber-500/5 border border-amber-500/20 rounded-2xl p-3.5 space-y-1">
-            <span className="text-[11px] font-semibold text-amber-600 dark:text-amber-400 block">Chưa Fix (Todo)</span>
-            <span className="text-xl font-black text-amber-600 dark:text-amber-400 font-mono">{stats.todo}</span>
+            <span className="text-xs font-medium text-amber-600 dark:text-amber-400 block">Chưa fix (Todo)</span>
+            <span className="text-xl font-bold text-amber-600 dark:text-amber-400 tabular-nums">{stats.todo}</span>
           </div>
 
           <div className="bg-blue-500/5 border border-blue-500/20 rounded-2xl p-3.5 space-y-1">
-            <span className="text-[11px] font-semibold text-blue-600 dark:text-blue-400 block">Đang Fix</span>
-            <span className="text-xl font-black text-blue-600 dark:text-blue-400 font-mono">{stats.in_progress}</span>
+            <span className="text-xs font-medium text-blue-600 dark:text-blue-400 block">Đang fix</span>
+            <span className="text-xl font-bold text-blue-600 dark:text-blue-400 tabular-nums">{stats.in_progress}</span>
           </div>
 
           <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-2xl p-3.5 space-y-1">
-            <span className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 block">Đã Fix</span>
-            <span className="text-xl font-black text-emerald-600 dark:text-emerald-400 font-mono">{stats.resolved}</span>
+            <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400 block">Đã fix</span>
+            <span className="text-xl font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">{stats.resolved}</span>
           </div>
 
           <div className="bg-purple-500/5 border border-purple-500/20 rounded-2xl p-3.5 space-y-1">
-            <span className="text-[11px] font-semibold text-purple-600 dark:text-purple-400 block">Lỗi Frontend (FE)</span>
-            <span className="text-xl font-black text-purple-600 dark:text-purple-400 font-mono">{stats.fe_count}</span>
+            <span className="text-xs font-medium text-purple-600 dark:text-purple-400 block">Lỗi Frontend (FE)</span>
+            <span className="text-xl font-bold text-purple-600 dark:text-purple-400 tabular-nums">{stats.fe_count}</span>
           </div>
 
           <div className="bg-indigo-500/5 border border-indigo-500/20 rounded-2xl p-3.5 space-y-1">
-            <span className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 block">Lỗi Backend (BE)</span>
-            <span className="text-xl font-black text-indigo-600 dark:text-indigo-400 font-mono">{stats.be_count}</span>
+            <span className="text-xs font-medium text-indigo-600 dark:text-indigo-400 block">Lỗi Backend (BE)</span>
+            <span className="text-xl font-bold text-indigo-600 dark:text-indigo-400 tabular-nums">{stats.be_count}</span>
           </div>
         </div>
       </div>
@@ -922,7 +1251,7 @@ export const BugTrackerPage: React.FC = () => {
                                   bug={bug}
                                   onClick={() => openDetailModal(bug)}
                                   onEdit={() => openEditModal(bug)}
-                                  onDelete={(e) => handleDeleteBug(bug.id, e)}
+                                  onDelete={(e) => confirmDeleteBug(bug, e)}
                                   onStatusChange={(nextStatus, e) => handleQuickStatusChange(bug.id, nextStatus, e)}
                                   getTypeBadge={getTypeBadge}
                                   getSeverityBadge={getSeverityBadge}
@@ -989,6 +1318,12 @@ export const BugTrackerPage: React.FC = () => {
                             <span>{bug.annotated_images_count || 1} ảnh có đánh dấu</span>
                           </span>
                         )}
+                        {bug.payload && (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-mono font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0" title="Có dữ liệu payload">
+                            <Code className="w-2.5 h-2.5" />
+                            <span>Payload</span>
+                          </span>
+                        )}
                       </div>
                       {bug.fix_solution && (
                         <div className="text-[11px] text-emerald-600 dark:text-emerald-400 truncate max-w-sm">
@@ -1053,7 +1388,7 @@ export const BugTrackerPage: React.FC = () => {
                         </button>
                         <button
                           type="button"
-                          onClick={(e) => handleDeleteBug(bug.id, e)}
+                          onClick={(e) => confirmDeleteBug(bug, e)}
                           className="p-1.5 rounded-lg hover:bg-red-500/10 text-muted-foreground hover:text-red-600 transition"
                           title="Xóa"
                         >
@@ -1073,6 +1408,7 @@ export const BugTrackerPage: React.FC = () => {
       {isFormModalOpen && typeof document !== 'undefined' && createPortal(
         <div 
           className="fixed inset-0 z-[70] flex items-center justify-center p-3 sm:p-4 bg-background/80 backdrop-blur-sm animate-in fade-in duration-200"
+          onClick={handleRequestCloseForm}
         >
           <div 
             className="bg-card border border-border rounded-2xl sm:rounded-3xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90dvh]"
@@ -1095,7 +1431,7 @@ export const BugTrackerPage: React.FC = () => {
               </div>
               <button
                 type="button"
-                onClick={closeFormModal}
+                onClick={handleRequestCloseForm}
                 className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition shrink-0 ml-2"
                 title="Đóng"
               >
@@ -1241,6 +1577,100 @@ export const BugTrackerPage: React.FC = () => {
                 />
               </div>
 
+              {/* Payload / Dữ liệu mô phỏng lỗi (Code Input) */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="font-bold text-foreground flex items-center gap-1.5">
+                    <Code className="w-3.5 h-3.5 text-primary" />
+                    <span>Payload / Dữ liệu gây lỗi</span>
+                    <span className="text-[10px] text-muted-foreground font-normal">(JSON, Request body, Response, cURL, Logs...)</span>
+                  </label>
+                  <div className="flex items-center gap-1.5">
+                    {formPayload && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={handleFormatPayloadJson}
+                          className="px-2.5 py-1 rounded-md bg-card hover:bg-muted border border-border text-foreground text-[11px] font-mono flex items-center gap-1.5 shadow-2xs transition"
+                          title="Tự động định dạng thụt lề JSON (Format JSON)"
+                        >
+                          <Sparkles className="w-3 h-3 text-primary" />
+                          <span>Format JSON</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleCopyFormPayload}
+                          className="px-2.5 py-1 rounded-md bg-card hover:bg-muted border border-border text-foreground text-[11px] font-mono flex items-center gap-1.5 shadow-2xs transition"
+                          title="Sao chép payload"
+                        >
+                          {isPayloadCopied ? (
+                            <>
+                              <Check className="w-3 h-3 text-emerald-500" />
+                              <span className="text-emerald-500 font-bold">Đã chép</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3 h-3 text-muted-foreground" />
+                              <span>Sao chép</span>
+                            </>
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setFormPayload('')}
+                          className="p-1 rounded-md bg-card hover:bg-red-500/10 border border-border text-muted-foreground hover:text-red-600 transition"
+                          title="Xóa nội dung payload"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-border bg-card overflow-hidden shadow-xs focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20 transition-all">
+                  {/* Top Editor Bar */}
+                  <div className="px-3.5 py-2 bg-muted/60 dark:bg-muted/40 border-b border-border flex items-center justify-between text-xs font-mono select-none">
+                    <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-2.5 h-2.5 rounded-full bg-red-500/70 inline-block" />
+                        <span className="w-2.5 h-2.5 rounded-full bg-amber-500/70 inline-block" />
+                        <span className="w-2.5 h-2.5 rounded-full bg-emerald-500/70 inline-block" />
+                      </div>
+                      <div className="h-3 w-px bg-border mx-1" />
+                      <span className="text-foreground font-semibold text-[11px] flex items-center gap-1.5">
+                        <FileCode className="w-3.5 h-3.5 text-primary" />
+                        <span>payload.json</span>
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                      {formPayload ? (
+                        <span>
+                          {formPayload.split('\n').length} dòng • {formPayload.length} ký tự
+                        </span>
+                      ) : (
+                        <span className="hidden sm:inline">Hỗ trợ phím Tab để thụt dòng</span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Monospace Code Editor Textarea */}
+                  <div className="p-3 bg-background/50 dark:bg-background/30">
+                    <textarea
+                      rows={6}
+                      value={formPayload}
+                      onChange={(e) => setFormPayload(e.target.value)}
+                      onKeyDown={handlePayloadKeyDown}
+                      spellCheck={false}
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      placeholder={`// Dán dữ liệu request body, params, response lỗi hoặc cURL tại đây...\n{\n  "endpoint": "POST /api/v1/surveys/submit",\n  "request": { "surveyId": 12975, "step": 2 },\n  "response": { "code": 500, "message": "NullPointerException" }\n}`}
+                      className="w-full bg-transparent font-mono text-xs text-foreground placeholder:text-muted-foreground/50 leading-relaxed focus:outline-none resize-y min-h-[140px] max-h-[360px] selection:bg-primary/20 scrollbar-thin"
+                    />
+                  </div>
+                </div>
+              </div>
+
               {/* Mô tả cách fix (Fix solution) */}
               <div className="space-y-1.5 bg-emerald-500/5 border border-emerald-500/20 rounded-2xl p-3.5">
                 <label className="font-bold text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5">
@@ -1264,6 +1694,17 @@ export const BugTrackerPage: React.FC = () => {
                     <span>Hình ảnh minh họa / Tệp lỗi ({formAttachments.length})</span>
                   </label>
                   <div className="flex items-center gap-2">
+                    {formAttachments.some((a) => a.isImage) && (
+                      <button
+                        type="button"
+                        onClick={() => handleOpenFormAnnotation()}
+                        className="text-xs font-bold text-emerald-600 dark:text-emerald-400 hover:text-emerald-500 flex items-center gap-1.5 px-2.5 py-1 rounded-xl border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/15 transition shadow-2xs"
+                        title="Mở Trình Đánh Dấu Ảnh để vẽ khoanh vùng, mũi tên, số thứ tự"
+                      >
+                        <Sparkles className="w-3.5 h-3.5" />
+                        <span>Trình Đánh Dấu Ảnh</span>
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={handlePasteButtonClick}
@@ -1322,51 +1763,89 @@ export const BugTrackerPage: React.FC = () => {
                 ) : (
                   <>
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 pt-1">
-                      {formAttachments.map((att) => (
-                        <div
-                          key={att.id}
-                          className="rounded-xl border border-border bg-background p-2 relative flex items-center gap-2 group"
-                        >
-                          {att.isImage ? (
-                            <img
-                              src={att.isPending ? att.previewUrl : resolveApiUrl(att.url!)}
-                              alt=""
-                              className="w-10 h-10 rounded-lg object-cover bg-muted shrink-0 cursor-pointer"
-                              onClick={() => setPreviewImage({ 
-                                url: att.isPending ? att.previewUrl! : resolveApiUrl(att.url!), 
-                                title: att.originalName 
-                              })}
-                            />
-                          ) : (
-                            <div className="w-10 h-10 rounded-lg bg-muted flex items-center justify-center shrink-0">
-                              <FileIcon className="w-5 h-5 text-muted-foreground" />
-                            </div>
-                          )}
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-1">
-                              <span className="font-semibold text-foreground truncate block text-[11px]" title={att.originalName}>
-                                {att.originalName}
-                              </span>
-                              {att.isPending && (
-                                <span className="shrink-0 text-[9px] px-1 py-0.2 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400 font-semibold">
-                                  Mới
-                                </span>
-                              )}
-                            </div>
-                            <span className="text-[10px] text-muted-foreground">
-                              {formatBytes(att.size)}
-                            </span>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => removeAttachment(att.id)}
-                            className="p-1 rounded-md hover:bg-red-500/10 text-muted-foreground hover:text-red-600 transition shrink-0"
-                            title="Xóa tệp"
+                      {formAttachments.map((att) => {
+                        const hasAnnotations = att.annotations && att.annotations.length > 0;
+                        const imgUrl = att.isPending ? att.previewUrl! : resolveApiUrl(att.url!);
+
+                        return (
+                          <div
+                            key={att.id}
+                            className="rounded-xl border border-border bg-background p-2 relative flex flex-col gap-2 group hover:border-primary/50 transition shadow-2xs"
                           >
-                            <X className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      ))}
+                            <div className="flex items-center gap-2">
+                              {att.isImage ? (
+                                <div 
+                                  className="relative w-12 h-12 rounded-lg overflow-hidden bg-muted shrink-0 cursor-pointer group/thumb"
+                                  onClick={() => handleOpenFormAnnotation(att.id)}
+                                  title="Nhấn để mở Trình Đánh Dấu Ảnh"
+                                >
+                                  <img
+                                    src={imgUrl}
+                                    alt=""
+                                    className="w-full h-full object-cover group-hover/thumb:scale-105 transition duration-200"
+                                  />
+                                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/thumb:opacity-100 transition flex items-center justify-center">
+                                    <Sparkles className="w-4 h-4 text-white" />
+                                  </div>
+                                  {hasAnnotations && (
+                                    <div className="absolute top-0.5 right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-500 ring-2 ring-background" title={`${att.annotations!.length} điểm đánh dấu`} />
+                                  )}
+                                </div>
+                              ) : (
+                                <div className="w-12 h-12 rounded-lg bg-muted flex items-center justify-center shrink-0">
+                                  <FileIcon className="w-5 h-5 text-muted-foreground" />
+                                </div>
+                              )}
+
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-1">
+                                  <span className="font-semibold text-foreground truncate block text-[11px]" title={att.originalName}>
+                                    {att.originalName}
+                                  </span>
+                                  {att.isPending && (
+                                    <span className="shrink-0 text-[9px] px-1 py-0.2 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400 font-semibold">
+                                      Mới
+                                    </span>
+                                  )}
+                                </div>
+                                <span className="text-[10px] text-muted-foreground block">
+                                  {formatBytes(att.size)}
+                                </span>
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() => removeAttachment(att.id)}
+                                className="p-1 rounded-md hover:bg-red-500/10 text-muted-foreground hover:text-red-600 transition shrink-0"
+                                title="Xóa tệp"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+
+                            {/* Button Trình Đánh Dấu Ảnh */}
+                            {att.isImage && (
+                              <button
+                                type="button"
+                                onClick={() => handleOpenFormAnnotation(att.id)}
+                                className={`w-full py-1 px-2 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1.5 transition ${
+                                  hasAnnotations
+                                    ? 'bg-primary/15 text-primary hover:bg-primary/20 border border-primary/30'
+                                    : 'bg-muted hover:bg-primary/10 text-foreground hover:text-primary border border-border'
+                                }`}
+                                title="Mở Trình Đánh Dấu Ảnh để vẽ khoanh vùng, mũi tên, số thứ tự"
+                              >
+                                <Sparkles className="w-3 h-3 text-primary" />
+                                <span>
+                                  {hasAnnotations 
+                                    ? `Đã đánh dấu (${att.annotations!.length} điểm)` 
+                                    : 'Trình Đánh Dấu Ảnh'}
+                                </span>
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
 
                     {/* Quick paste / drop helper when attachments already exist */}
@@ -1393,7 +1872,7 @@ export const BugTrackerPage: React.FC = () => {
             <div className="shrink-0 px-4 sm:px-5 py-2.5 border-t border-border bg-card flex items-center justify-end gap-2 text-xs">
               <button
                 type="button"
-                onClick={closeFormModal}
+                onClick={handleRequestCloseForm}
                 className="px-3.5 py-1.5 rounded-xl border border-border text-foreground hover:bg-accent font-semibold transition"
               >
                 Hủy Bỏ
@@ -1425,6 +1904,7 @@ export const BugTrackerPage: React.FC = () => {
       {isDetailModalOpen && selectedBug && typeof document !== 'undefined' && createPortal(
         <div 
           className="fixed inset-0 z-[70] flex items-center justify-center p-3 sm:p-4 bg-background/80 backdrop-blur-sm animate-in fade-in duration-200"
+          onClick={() => setIsDetailModalOpen(false)}
         >
           <div 
             className="bg-card border border-border rounded-3xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[92dvh]"
@@ -1468,7 +1948,7 @@ export const BugTrackerPage: React.FC = () => {
                 </button>
                 <button
                   type="button"
-                  onClick={() => handleDeleteBug(selectedBug.id)}
+                  onClick={() => confirmDeleteBug(selectedBug)}
                   className="p-2 rounded-xl text-muted-foreground hover:text-red-600 hover:bg-red-500/10 transition"
                   title="Xóa bug"
                 >
@@ -1557,6 +2037,54 @@ export const BugTrackerPage: React.FC = () => {
                 </div>
               </div>
 
+              {/* Payload / Dữ liệu gây lỗi */}
+              {selectedBug.payload && (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-bold text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                      <Code className="w-3.5 h-3.5 text-primary" />
+                      <span>Payload / Dữ liệu gây lỗi</span>
+                    </h4>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(selectedBug.payload || '');
+                        toast.success('Đã sao chép payload!');
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-card hover:bg-muted border border-border text-foreground font-mono text-[11px] font-semibold flex items-center gap-1.5 shadow-2xs transition"
+                      title="Sao chép payload vào clipboard"
+                    >
+                      <Copy className="w-3 h-3 text-primary" />
+                      <span>Sao chép Payload</span>
+                    </button>
+                  </div>
+                  <div className="rounded-2xl border border-border bg-card overflow-hidden shadow-xs">
+                    <div className="px-3.5 py-2 bg-muted/60 dark:bg-muted/40 border-b border-border flex items-center justify-between text-[11px] font-mono text-muted-foreground select-none">
+                      <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1.5">
+                          <span className="w-2.5 h-2.5 rounded-full bg-red-500/70 inline-block" />
+                          <span className="w-2.5 h-2.5 rounded-full bg-amber-500/70 inline-block" />
+                          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500/70 inline-block" />
+                        </div>
+                        <div className="h-3 w-px bg-border mx-1" />
+                        <span className="text-foreground font-semibold flex items-center gap-1.5">
+                          <FileCode className="w-3.5 h-3.5 text-primary" />
+                          <span>payload.json</span>
+                        </span>
+                      </div>
+                      <span className="text-[10px]">
+                        {selectedBug.payload.split('\n').length} dòng • {selectedBug.payload.length} ký tự
+                      </span>
+                    </div>
+                    <div className="p-4 overflow-x-auto max-h-[280px] scrollbar-thin bg-background/50 dark:bg-background/30">
+                      <pre className="font-mono text-xs text-foreground whitespace-pre leading-relaxed selection:bg-primary/20">
+                        <code>{selectedBug.payload}</code>
+                      </pre>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* Giải pháp Fix */}
               <div className="space-y-1.5">
                 <h4 className="font-bold text-xs uppercase tracking-wider text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
@@ -1600,11 +2128,19 @@ export const BugTrackerPage: React.FC = () => {
                       >
                         {att.isImage ? (
                           <div
-                            onClick={() => setPreviewImage({ 
-                              url: resolveApiUrl(att.url), 
-                              title: att.originalName,
-                              imageId: att.id || att.filename
-                            })}
+                            onClick={() => {
+                              const annList = selectedBug.annotations?.[att.id || att.filename]?.annotations || [];
+                              setIsNotesSidebarOpen(typeof window !== 'undefined' && window.innerWidth >= 768 && annList.length > 0);
+                              setHoveredAnnotationId(null);
+                              setSelectedAnnotationId(null);
+                              setPreviewImage({ 
+                                url: resolveApiUrl(att.url), 
+                                title: att.originalName,
+                                imageId: att.id || att.filename,
+                                bug: selectedBug,
+                                annotations: annList
+                              });
+                            }}
                             className="aspect-video w-full bg-muted/30 rounded-lg overflow-hidden cursor-pointer relative mb-1.5"
                           >
                             <AnnotationOverlayView
@@ -1665,91 +2201,401 @@ export const BugTrackerPage: React.FC = () => {
         document.body
       )}
 
-      {/* FULLSCREEN IMAGE LIGHTBOX */}
-      {previewImage && typeof document !== 'undefined' && createPortal(
-        <div 
-          className="fixed inset-0 z-[100] bg-black/85 backdrop-blur-sm flex flex-col animate-in fade-in duration-200"
-        >
+      {/* FULLSCREEN IMAGE LIGHTBOX & ANNOTATION VIEWER */}
+      {previewImage && typeof document !== 'undefined' && (() => {
+        const activeBug = previewImage.bug || selectedBug;
+        const activeAnnotations: AnnotationItem[] = 
+          previewImage.annotations && previewImage.annotations.length > 0
+            ? previewImage.annotations
+            : (previewImage.imageId && activeBug?.annotations?.[previewImage.imageId]?.annotations) || [];
+
+        return createPortal(
           <div 
-            className="p-4 flex items-center justify-between text-white shrink-0 bg-gradient-to-b from-black/80 to-transparent"
-            onClick={(e) => e.stopPropagation()}
+            className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-md flex flex-col animate-in fade-in duration-200 select-none"
+            onClick={() => setPreviewImage(null)}
           >
-            <div className="flex items-center gap-2 min-w-0">
-              <ImageIcon className="w-4 h-4 text-primary shrink-0" />
-              <span className="text-sm font-bold truncate max-w-md">{previewImage.title}</span>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              {selectedBug && (
+            {/* Top Bar */}
+            <div 
+              className="px-4 py-3 border-b border-white/10 flex items-center justify-between text-white shrink-0 bg-black/70 backdrop-blur z-20"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="p-1.5 rounded-lg bg-primary/20 text-primary shrink-0">
+                  <ImageIcon className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-white truncate max-w-xs sm:max-w-md">
+                      {previewImage.title}
+                    </span>
+                    {activeBug?.id && (
+                      <span className="font-mono text-[10px] font-bold text-muted-foreground bg-white/10 px-1.5 py-0.5 rounded shrink-0">
+                        Bug #{activeBug.id}
+                      </span>
+                    )}
+                    {activeAnnotations.length > 0 && (
+                      <span className="px-2 py-0.5 rounded-full bg-primary/20 text-primary text-[10px] font-bold flex items-center gap-1 shrink-0">
+                        <Sparkles className="w-2.5 h-2.5" />
+                        <span>{activeAnnotations.length} điểm đánh dấu</span>
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                {/* Toggle Notes List Sidebar */}
+                {activeAnnotations.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setIsNotesSidebarOpen(!isNotesSidebarOpen)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition ${
+                      isNotesSidebarOpen
+                        ? 'bg-primary text-primary-foreground shadow-md'
+                        : 'bg-white/10 hover:bg-white/20 text-white'
+                    }`}
+                    title={isNotesSidebarOpen ? 'Ẩn danh sách ghi chú' : 'Xem danh sách ghi chú đã note'}
+                  >
+                    <ListOrdered className="w-3.5 h-3.5" />
+                    <span>Ghi chú ({activeAnnotations.length})</span>
+                  </button>
+                )}
+
+                {/* Edit / Open Annotation Canvas */}
+                {activeBug && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const currentBug = activeBug;
+                      const imgId = previewImage.imageId;
+                      setPreviewImage(null);
+                      setAnnotationModalState({
+                        isOpen: true,
+                        bug: currentBug,
+                        imageId: imgId
+                      });
+                    }}
+                    className="p-2 rounded-xl bg-primary text-primary-foreground hover:opacity-90 transition flex items-center gap-1.5 text-xs font-semibold"
+                    title="Mở trình đánh dấu ảnh để thêm/sửa ghi chú"
+                  >
+                    <Sparkles className="w-4 h-4" />
+                    <span className="hidden sm:inline">Đánh dấu ảnh</span>
+                  </button>
+                )}
+
+                <a
+                  href={previewImage.url}
+                  download={previewImage.title}
+                  className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-white transition flex items-center gap-1.5 text-xs font-semibold"
+                  title="Tải ảnh về máy"
+                >
+                  <Download className="w-4 h-4" />
+                  <span className="hidden sm:inline">Tải về</span>
+                </a>
+                <a
+                  href={previewImage.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-white transition flex items-center gap-1.5 text-xs font-semibold"
+                  title="Mở tab mới"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                  <span className="hidden sm:inline">Mở gốc</span>
+                </a>
                 <button
                   type="button"
-                  onClick={() => {
-                    const currentBug = selectedBug;
-                    setPreviewImage(null);
-                    setAnnotationModalState({
-                      isOpen: true,
-                      bug: currentBug
-                    });
-                  }}
-                  className="p-2 rounded-xl bg-primary text-primary-foreground hover:opacity-90 transition flex items-center gap-1.5 text-xs font-semibold"
-                  title="Mở trình đánh dấu ảnh"
+                  onClick={() => setPreviewImage(null)}
+                  className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-white transition ml-1"
+                  title="Đóng (Esc)"
                 >
-                  <Sparkles className="w-4 h-4" />
-                  <span className="hidden sm:inline">Đánh dấu ảnh</span>
+                  <X className="w-5 h-5" />
                 </button>
-              )}
-              <a
-                href={previewImage.url}
-                download
-                className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-white transition flex items-center gap-1.5 text-xs font-semibold"
-                title="Tải ảnh về máy"
-              >
-                <Download className="w-4 h-4" />
-                <span className="hidden sm:inline">Tải về</span>
-              </a>
-              <a
-                href={previewImage.url}
-                target="_blank"
-                rel="noreferrer"
-                className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-white transition flex items-center gap-1.5 text-xs font-semibold"
-                title="Mở tab mới"
-              >
-                <ExternalLink className="w-4 h-4" />
-                <span className="hidden sm:inline">Mở gốc</span>
-              </a>
+              </div>
+            </div>
+
+            {/* Viewport & Notes Panel */}
+            <div className="flex-1 flex overflow-hidden relative" onClick={(e) => e.stopPropagation()}>
+              {/* Image Viewport */}
+              <div className="flex-1 flex items-center justify-center p-4 overflow-hidden relative">
+                <AnnotationOverlayView
+                  imageSrc={previewImage.url}
+                  imageAlt={previewImage.title}
+                  annotations={activeAnnotations}
+                  className="max-h-[85vh] max-w-full rounded-xl shadow-2xl"
+                  fit="contain"
+                  showToggle={true}
+                  hoveredId={hoveredAnnotationId}
+                  selectedId={selectedAnnotationId}
+                  onSelectAnnotation={(ann) => {
+                    setSelectedAnnotationId(ann.id);
+                    setIsNotesSidebarOpen(true);
+                  }}
+                />
+              </div>
+
+              {/* Side Drawer: Ghi Chú Đánh Dấu (Desktop side-by-side, Mobile overlay drawer) */}
+              {isNotesSidebarOpen && activeAnnotations.length > 0 && (
+                <>
+                  {/* Mobile backdrop for notes drawer */}
+                  <div
+                    className="md:hidden fixed inset-0 bg-black/60 backdrop-blur-xs z-25 animate-in fade-in duration-200"
+                    onClick={() => setIsNotesSidebarOpen(false)}
+                  />
+                  <div 
+                    className="fixed md:relative inset-y-0 right-0 max-w-[85vw] w-80 sm:w-96 border-l border-white/10 bg-slate-950/95 backdrop-blur-xl flex flex-col shrink-0 overflow-hidden z-30 shadow-2xl animate-in slide-in-from-right duration-200"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                  <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between text-white shrink-0">
+                    <div className="flex items-center gap-2">
+                      <ListOrdered className="w-4 h-4 text-primary" />
+                      <h3 className="font-bold text-xs uppercase tracking-wider text-slate-200">
+                        Ghi Chú Đánh Dấu ({activeAnnotations.length})
+                      </h3>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleCopyMarkdownForPreview(previewImage.title, activeAnnotations)}
+                        className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[11px] font-semibold flex items-center gap-1 transition"
+                        title="Sao chép bảng ghi chú sang Markdown"
+                      >
+                        <Copy className="w-3 h-3" />
+                        <span>Copy MD</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setIsNotesSidebarOpen(false)}
+                        className="p-1 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition"
+                        title="Ẩn danh sách ghi chú"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex-1 overflow-y-auto p-3 space-y-2.5 scrollbar-thin">
+                    {activeAnnotations
+                      .slice()
+                      .sort((a, b) => a.sequence - b.sequence)
+                      .map((ann) => {
+                        const isHovered = hoveredAnnotationId === ann.id;
+                        const isSelected = selectedAnnotationId === ann.id;
+
+                        return (
+                          <div
+                            key={ann.id}
+                            onMouseEnter={() => setHoveredAnnotationId(ann.id)}
+                            onMouseLeave={() => setHoveredAnnotationId(null)}
+                            onClick={() => setSelectedAnnotationId(ann.id)}
+                            className={`p-3 rounded-xl border transition cursor-pointer ${
+                              isSelected || isHovered
+                                ? 'bg-primary/20 border-primary shadow-lg ring-1 ring-primary/40'
+                                : 'bg-white/5 hover:bg-white/10 border-white/10'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-2 mb-1.5">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span
+                                  className="w-5 h-5 rounded-full text-xs font-bold text-white flex items-center justify-center shrink-0 shadow-sm"
+                                  style={{ backgroundColor: ann.color }}
+                                >
+                                  {ann.sequence}
+                                </span>
+                                <span className="text-xs font-bold text-slate-200 truncate">
+                                  {getAnnotationTypeName(ann.type)} #{ann.sequence}
+                                </span>
+                              </div>
+                              <span 
+                                className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
+                                style={{ 
+                                  backgroundColor: `${ann.color}25`, 
+                                  color: ann.color, 
+                                  border: `1px solid ${ann.color}50` 
+                                }}
+                              >
+                                {ann.status === 'resolved' ? 'Đã fix' : ann.status === 'fixing' ? 'Đang fix' : 'Chưa fix'}
+                              </span>
+                            </div>
+
+                            <div className="text-xs text-slate-300 leading-relaxed whitespace-pre-wrap break-words pl-7 select-text">
+                              {ann.note ? (
+                                ann.note
+                              ) : (
+                                <span className="italic text-slate-500">Chưa có ghi chú mô tả</span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                  </div>
+                </div>
+              </>
+            )}
+            </div>
+          </div>,
+          document.body
+        );
+      })()}
+
+      {/* BUG IMAGE ANNOTATION MODAL */}
+      {annotationModalState.isOpen && (
+        <AnnotationModal
+          isOpen={annotationModalState.isOpen}
+          onClose={() => setAnnotationModalState({ isOpen: false, bug: null, isFormDraft: false, customImages: undefined })}
+          bug={annotationModalState.bug}
+          initialImageId={annotationModalState.imageId}
+          customImages={annotationModalState.customImages}
+          customTitle={annotationModalState.isFormDraft ? (formTitle.trim() || (editingBug ? 'Chỉnh Sửa Bug' : 'Báo Cáo Bug Mới')) : undefined}
+          customUsKey={annotationModalState.isFormDraft ? formUsKey.trim() : undefined}
+          onSaveFormAnnotations={annotationModalState.isFormDraft ? handleSaveFormAnnotations : undefined}
+          onAddDraftImage={annotationModalState.isFormDraft ? (file) => addFilesToForm([file]) : undefined}
+          onAnnotationsUpdated={() => loadBugs()}
+        />
+      )}
+
+      {/* CONFIRM DELETE BUG MODAL */}
+      {bugToDelete && typeof document !== 'undefined' && createPortal(
+        <div 
+          className="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-background/80 backdrop-blur-sm animate-in fade-in duration-200"
+          onClick={() => !isDeletingBug && setBugToDelete(null)}
+        >
+          <div 
+            className="bg-card border border-border rounded-3xl w-full max-w-md shadow-2xl p-5 sm:p-6 space-y-4 animate-in zoom-in-95 duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3.5">
+              <div className="w-10 h-10 rounded-2xl bg-red-500/10 text-red-600 dark:text-red-400 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h3 className="font-bold text-base text-foreground leading-tight">
+                  Xác nhận xóa bug
+                </h3>
+                <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed">
+                  Bạn có chắc chắn muốn xóa vĩnh viễn bug <strong className="text-foreground">#{bugToDelete.id}</strong>: <span className="font-semibold text-foreground">"{bugToDelete.title}"</span>? Thao tác này sẽ xóa toàn bộ dữ liệu, hình ảnh và lịch sử chú thích của bug.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-border">
               <button
                 type="button"
-                onClick={() => setPreviewImage(null)}
-                className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-white transition"
-                title="Đóng"
+                disabled={isDeletingBug}
+                onClick={() => setBugToDelete(null)}
+                className="px-4 py-2 rounded-xl border border-border text-foreground hover:bg-muted font-semibold text-xs transition disabled:opacity-50"
               >
-                <X className="w-5 h-5" />
+                Hủy bỏ
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingBug}
+                onClick={executeDeleteBug}
+                className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs shadow-sm transition disabled:opacity-50 flex items-center gap-1.5"
+              >
+                {isDeletingBug ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Đang xóa...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Xác nhận xóa</span>
+                  </>
+                )}
               </button>
             </div>
-          </div>
-          <div className="flex-1 flex items-center justify-center p-4 overflow-hidden relative" onClick={(e) => e.stopPropagation()}>
-            <AnnotationOverlayView
-              imageSrc={previewImage.url}
-              imageAlt={previewImage.title}
-              annotations={(previewImage.imageId && selectedBug?.annotations?.[previewImage.imageId]?.annotations) || []}
-              className="max-h-[85vh] max-w-[90vw] rounded-xl shadow-2xl"
-              fit="contain"
-              showToggle={true}
-            />
           </div>
         </div>,
         document.body
       )}
 
-      {/* BUG IMAGE ANNOTATION MODAL */}
-      {annotationModalState.isOpen && annotationModalState.bug && (
-        <AnnotationModal
-          isOpen={annotationModalState.isOpen}
-          onClose={() => setAnnotationModalState({ isOpen: false, bug: null })}
-          bug={annotationModalState.bug}
-          initialImageId={annotationModalState.imageId}
-          onAnnotationsUpdated={() => loadBugs()}
-        />
+      {/* CONFIRM UNSAVED CHANGES MODAL */}
+      {showUnsavedConfirmModal && typeof document !== 'undefined' && createPortal(
+        <div 
+          className="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-background/80 backdrop-blur-sm animate-in fade-in duration-200"
+          onClick={() => setShowUnsavedConfirmModal(false)}
+        >
+          <div 
+            className="bg-card border border-border rounded-3xl w-full max-w-md shadow-2xl p-5 sm:p-6 space-y-4 animate-in zoom-in-95 duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3.5">
+              <div className="w-10 h-10 rounded-2xl bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h3 className="font-bold text-base text-foreground leading-tight">
+                  Thay đổi chưa được lưu
+                </h3>
+                <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed">
+                  Bạn có các thông tin {editingBug ? `chỉnh sửa bug #${editingBug.id}` : 'nhập mới bug'} chưa được lưu. Bạn muốn lưu lại trước khi đóng hay hủy bỏ các thay đổi?
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2 pt-3 border-t border-border">
+              <button
+                type="button"
+                onClick={() => setShowUnsavedConfirmModal(false)}
+                className="w-full sm:w-auto px-3.5 py-2 rounded-xl border border-border text-foreground hover:bg-muted font-semibold text-xs transition text-center"
+              >
+                Tiếp tục chỉnh sửa
+              </button>
+              <button
+                type="button"
+                onClick={handleDiscardAndClose}
+                className="w-full sm:w-auto px-3.5 py-2 rounded-xl border border-red-500/20 bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 font-bold text-xs transition text-center"
+              >
+                Hủy bỏ & Đóng
+              </button>
+              <button
+                type="button"
+                disabled={isSubmitting}
+                onClick={handleSaveAndClose}
+                className="w-full sm:w-auto px-4 py-2 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground font-bold text-xs shadow-sm transition disabled:opacity-50 flex items-center justify-center gap-1.5"
+              >
+                {isSubmitting ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Đang lưu...</span>
+                  </>
+                ) : (
+                  <>
+                    <Check className="w-3.5 h-3.5" />
+                    <span>Lưu & Đóng</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
       )}
+
+      {/* Confirm Bug Status Change Modal */}
+      <ConfirmModal
+        isOpen={!!pendingStatusChange}
+        title="Xác nhận chuyển trạng thái Bug"
+        description={
+          pendingStatusChange ? (
+            <span>
+              Bạn có chắc chắn muốn chuyển trạng thái bug <strong className="text-foreground">#{pendingStatusChange.bugId}</strong>
+              {pendingStatusChange.bugTitle ? ` ("${pendingStatusChange.bugTitle}")` : ''} từ{' '}
+              <span className="font-semibold text-muted-foreground">"{getStatusLabel(pendingStatusChange.fromStatus)}"</span> sang{' '}
+              <span className="font-semibold text-primary">"{getStatusLabel(pendingStatusChange.toStatus)}"</span> không?
+            </span>
+          ) : ''
+        }
+        confirmText="Xác nhận chuyển"
+        cancelText="Hủy bỏ"
+        variant="primary"
+        loading={isUpdatingStatus}
+        onConfirm={executeStatusChange}
+        onClose={() => {
+          if (!isUpdatingStatus) setPendingStatusChange(null);
+        }}
+      />
     </div>
   );
 };
@@ -1795,21 +2641,21 @@ const BugCard: React.FC<BugCardProps> = React.memo(({
           {getSeverityBadge(bug.severity)}
         </div>
 
-        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition" onClick={(e) => e.stopPropagation()}>
           {images.length > 0 && (
             <button
               type="button"
               onClick={() => onOpenAnnotation(bug, images[0].id || images[0].filename)}
-              className="p-1 rounded hover:bg-primary/15 text-muted-foreground hover:text-primary transition"
+              className="p-1.5 sm:p-1 rounded hover:bg-primary/15 text-primary sm:text-muted-foreground sm:hover:text-primary transition"
               title="Đánh dấu hình ảnh"
             >
-              <Sparkles className="w-3.5 h-3.5 text-primary" />
+              <Sparkles className="w-3.5 h-3.5" />
             </button>
           )}
           <button
             type="button"
             onClick={onEdit}
-            className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition"
+            className="p-1.5 sm:p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition"
             title="Sửa bug"
           >
             <Edit3 className="w-3.5 h-3.5" />
@@ -1817,7 +2663,7 @@ const BugCard: React.FC<BugCardProps> = React.memo(({
           <button
             type="button"
             onClick={onDelete}
-            className="p-1 rounded hover:bg-red-500/10 text-muted-foreground hover:text-red-600 transition"
+            className="p-1.5 sm:p-1 rounded hover:bg-red-500/10 text-muted-foreground hover:text-red-600 transition"
             title="Xóa bug"
           >
             <Trash2 className="w-3.5 h-3.5" />
@@ -1862,7 +2708,14 @@ const BugCard: React.FC<BugCardProps> = React.memo(({
               <span>{bug.annotated_images_count || 1} ảnh có đánh dấu</span>
             </div>
           )}
-          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/thumb:opacity-100 transition flex items-center justify-center gap-1 text-white text-[11px] font-bold z-10">
+          {/* Mobile indicator pill for touch screens */}
+          <div className="sm:hidden absolute bottom-1.5 left-1.5 px-1.5 py-0.5 rounded bg-primary text-primary-foreground text-[9px] font-bold flex items-center gap-1 z-10 pointer-events-none shadow-xs">
+            <Sparkles className="w-2.5 h-2.5" />
+            <span>Mở Đánh Dấu</span>
+          </div>
+
+          {/* Desktop full hover overlay */}
+          <div className="hidden sm:flex absolute inset-0 bg-black/40 opacity-0 group-hover/thumb:opacity-100 transition items-center justify-center gap-1 text-white text-[11px] font-bold z-10">
             <Sparkles className="w-3.5 h-3.5 text-primary" />
             <span>Mở Đánh Dấu</span>
           </div>
@@ -1905,6 +2758,12 @@ const BugCard: React.FC<BugCardProps> = React.memo(({
             <span className="flex items-center gap-0.5 text-muted-foreground">
               <Paperclip className="w-3 h-3" />
               <span>{bug.attachments.length}</span>
+            </span>
+          )}
+          {bug.payload && (
+            <span className="flex items-center gap-0.5 text-emerald-600 dark:text-emerald-400 font-mono text-[9px] font-semibold bg-emerald-500/10 px-1 py-0.5 rounded border border-emerald-500/20" title="Có dữ liệu payload">
+              <Code className="w-2.5 h-2.5" />
+              <span>Payload</span>
             </span>
           )}
         </div>

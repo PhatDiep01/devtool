@@ -82,9 +82,9 @@ export const SettingsPage: React.FC = () => {
   return (
     <div className="p-4 sm:p-6 md:p-8 max-w-4xl mx-auto space-y-6 sm:space-y-8 animate-in fade-in duration-200">
       <div>
-        <h2 className="text-xl sm:text-2xl font-extrabold tracking-tight text-foreground">Settings & Configuration</h2>
-        <p className="text-xs sm:text-sm text-muted-foreground mt-1">
-          Quản lý tích hợp Jira, lưu trữ SQLite local và tùy chỉnh giao diện.
+        <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-foreground">Cài đặt hệ thống</h1>
+        <p className="text-xs sm:text-sm text-muted-foreground mt-1 leading-relaxed">
+          Quản lý tích hợp Jira, lưu trữ dữ liệu SQLite local và tùy chỉnh giao diện người dùng.
         </p>
       </div>
 

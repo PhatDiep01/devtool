@@ -14,6 +14,12 @@ import {
   formatJiraError
 } from '../services/jira-utils';
 import { deepSanitizeForJiraServer } from '../middleware/jira-auth';
+import { 
+  encodeCaptchaToken, 
+  decodeCaptchaToken, 
+  mergeCookies, 
+  formatCookieHeader 
+} from '../services/jira-captcha';
 
 let testServer: http.Server;
 let port: number;
@@ -228,6 +234,43 @@ describe('Jira Dedicated Authentication & Public Handover Docs API Test Suite', 
       assert.equal(typeof res.data.message, 'string');
       assert.ok(res.data.message.includes('đồng bộ'));
     });
+
+    it('POST /api/bugs should successfully handle null fields without throwing Cannot read properties of null (reading trim)', async () => {
+      const bugPayload = {
+        title: 'Bug with null fields test',
+        us_key: null,
+        us_link: null,
+        type: 'FE',
+        status: 'todo',
+        severity: 'medium',
+        description: '',
+        payload: null,
+        fix_solution: '',
+        attachments: [],
+        created_by: null,
+        assigned_to: null
+      };
+
+      const res = await makeRequest('/api/bugs', { method: 'POST' }, bugPayload);
+      assert.equal(res.status, 201);
+      assert.ok(res.data.id > 0);
+      assert.equal(res.data.title, 'Bug with null fields test');
+      assert.equal(res.data.assigned_to, null);
+      assert.equal(res.data.created_by, null);
+      assert.equal(res.data.payload, null);
+
+      // Also test updating with null fields
+      const updateRes = await makeRequest(`/api/bugs/${res.data.id}`, { method: 'PUT' }, {
+        title: 'Updated title with null assigned_to',
+        assigned_to: null,
+        payload: null
+      });
+      assert.equal(updateRes.status, 200);
+      assert.equal(updateRes.data.title, 'Updated title with null assigned_to');
+
+      // Cleanup
+      await makeRequest(`/api/bugs/${res.data.id}`, { method: 'DELETE' });
+    });
   });
 
   // --- 2. Jira Protected Routes Enforcement ---
@@ -323,6 +366,18 @@ describe('Jira Dedicated Authentication & Public Handover Docs API Test Suite', 
 
     it('POST /api/jira/sprints/1/move-issues should return 401 when unauthenticated', async () => {
       const res = await makeRequest('/api/jira/sprints/1/move-issues', { method: 'POST' }, { issues: ['TEST-1'] });
+      assert.equal(res.status, 401);
+      assert.equal(res.data.code, 'JIRA_AUTH_REQUIRED');
+    });
+
+    it('PUT /api/jira/issues/TEST-1/worklog/1001 should return 401 when unauthenticated', async () => {
+      const res = await makeRequest('/api/jira/issues/TEST-1/worklog/1001', { method: 'PUT' }, { timeSpent: '1h' });
+      assert.equal(res.status, 401);
+      assert.equal(res.data.code, 'JIRA_AUTH_REQUIRED');
+    });
+
+    it('DELETE /api/jira/issues/TEST-1/worklog/1001 should return 401 when unauthenticated', async () => {
+      const res = await makeRequest('/api/jira/issues/TEST-1/worklog/1001', { method: 'DELETE' });
       assert.equal(res.status, 401);
       assert.equal(res.data.code, 'JIRA_AUTH_REQUIRED');
     });
@@ -527,6 +582,79 @@ describe('Jira Dedicated Authentication & Public Handover Docs API Test Suite', 
       assert.equal(res.data.user.displayName, 'Bearer Developer');
       assert.equal(res.data.user.authType, 'bearer');
     });
+
+    it('Multi-account support with separate username and user_email', async () => {
+      const db = getDb();
+      const sessionTokenA = uuidv4();
+      const sessionTokenB = uuidv4();
+      const futureDate = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+
+      // User A (LDAP username different from email)
+      db.prepare(`
+        INSERT INTO jira_sessions (
+          token, username, user_email, display_name, avatar_url, base_url, api_token, auth_type, created_at, expires_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
+      `).run(
+        sessionTokenA,
+        'phatdm',
+        'phatdm@ascvn.com.vn',
+        'Doan Minh Phat',
+        null,
+        'https://task.ascvn.com.vn',
+        'pwdA',
+        'basic',
+        futureDate
+      );
+
+      // User B (another person logging in with their own account)
+      db.prepare(`
+        INSERT INTO jira_sessions (
+          token, username, user_email, display_name, avatar_url, base_url, api_token, auth_type, created_at, expires_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
+      `).run(
+        sessionTokenB,
+        'KhaiDPQ',
+        'khaidpq@ascvn.com.vn',
+        'Khai Do Pham Quang',
+        null,
+        'https://task.ascvn.com.vn',
+        'pwdB',
+        'basic',
+        futureDate
+      );
+
+      // Verify User A session returns phatdm
+      const resA = await makeRequest('/api/jira/auth/session', {
+        headers: { Authorization: `Bearer ${sessionTokenA}` }
+      });
+      assert.equal(resA.status, 200);
+      assert.equal(resA.data.authenticated, true);
+      assert.equal(resA.data.user.username, 'phatdm');
+      assert.equal(resA.data.user.emailAddress, 'phatdm@ascvn.com.vn');
+
+      // Verify User B session returns KhaiDPQ and does not collide with User A
+      const resB = await makeRequest('/api/jira/auth/session', {
+        headers: { Authorization: `Bearer ${sessionTokenB}` }
+      });
+      assert.equal(resB.status, 200);
+      assert.equal(resB.data.authenticated, true);
+      assert.equal(resB.data.user.username, 'KhaiDPQ');
+      assert.equal(resB.data.user.emailAddress, 'khaidpq@ascvn.com.vn');
+
+      // Clean up
+      db.prepare('DELETE FROM jira_sessions WHERE token IN (?, ?)').run(sessionTokenA, sessionTokenB);
+    });
+
+    it('Security policy: No credentials stored in SQLite, config-info returns hasConfigured: false', async () => {
+      const cfgRes = await makeRequest('/api/jira/auth/config-info');
+      assert.equal(cfgRes.status, 200);
+      assert.equal(cfgRes.data.hasConfigured, false);
+      assert.ok('configuredBaseUrl' in cfgRes.data);
+
+      const db = getDb();
+      const checkSettings = db.prepare("SELECT * FROM settings WHERE key IN ('jira_api_token', 'jira_email', 'jira_username')").all();
+      assert.equal(checkSettings.length, 0, 'No credentials should exist in SQLite settings table');
+    });
   });
 
   // --- 4. Jira Utilities: ADF & Worklog Parsing ---
@@ -617,6 +745,56 @@ describe('Jira Dedicated Authentication & Public Handover Docs API Test Suite', 
       assert.equal(typeof sanitized.update.comment[0].add.body, 'string');
       assert.ok(sanitized.update.comment[0].add.body.includes('Nested comment'));
       assert.equal(sanitized.fields.summary, 'Normal string');
+    });
+  });
+
+  // --- 5. Jira CAPTCHA Handling & Token Tokenization ---
+  describe('Jira CAPTCHA Handling & Stateless Token Verification', () => {
+    it('encodeCaptchaToken and decodeCaptchaToken should accurately round-trip payload', () => {
+      const cookie = 'JSESSIONID=A1B2C3D4E5F6; atlassian.xsrf.token=XYZ789';
+      const baseUrl = 'https://task.ascvn.com.vn';
+      const token = encodeCaptchaToken(cookie, baseUrl);
+      assert.ok(typeof token === 'string');
+      assert.ok(token.length > 20);
+
+      const decoded = decodeCaptchaToken(token);
+      assert.ok(decoded !== null);
+      assert.equal(decoded?.cookie, cookie);
+      assert.equal(decoded?.baseUrl, baseUrl);
+    });
+
+    it('decodeCaptchaToken should reject expired or invalid tokens', () => {
+      // 1. Invalid base64
+      assert.equal(decodeCaptchaToken('not-a-valid-token-string!'), null);
+
+      // 2. Expired timestamp (> 15 minutes)
+      const expiredPayload = {
+        cookie: 'JSESSIONID=EXPIRED123',
+        baseUrl: 'https://task.ascvn.com.vn',
+        time: Date.now() - 20 * 60 * 1000 // 20 minutes ago
+      };
+      const expiredToken = Buffer.from(JSON.stringify(expiredPayload)).toString('base64url');
+      assert.equal(decodeCaptchaToken(expiredToken), null);
+    });
+
+    it('mergeCookies should update existing cookie keys and append new ones without duplicates', () => {
+      const base = 'JSESSIONID=OLD_SESSION; token=123';
+      const newSetCookies = [
+        'JSESSIONID=NEW_SESSION; Path=/; HttpOnly',
+        'atlassian.xsrf.token=XSRF_NEW; Path=/'
+      ];
+      const merged = mergeCookies(base, newSetCookies);
+      assert.ok(merged.includes('JSESSIONID=NEW_SESSION'));
+      assert.ok(merged.includes('token=123'));
+      assert.ok(merged.includes('atlassian.xsrf.token=XSRF_NEW'));
+      assert.ok(!merged.includes('OLD_SESSION'));
+    });
+
+    it('GET /api/jira/auth/captcha should reject Jira Cloud domains', async () => {
+      const res = await makeRequest('/api/jira/auth/captcha?baseUrl=https://company.atlassian.net');
+      assert.equal(res.status, 400);
+      assert.equal(res.data.success, false);
+      assert.ok(res.data.message.includes('Jira Cloud'));
     });
   });
 });

@@ -17,7 +17,8 @@ import {
   AlertCircle,
   Copy,
   ChevronDown,
-  Layers
+  Layers,
+  X
 } from 'lucide-react';
 import { ANNOTATION_COLORS, STATUS_OPTIONS } from './constants';
 import { toast } from 'react-hot-toast';
@@ -29,6 +30,9 @@ interface AnnotationSidebarProps {
   onUpdate: (id: string, updates: Partial<AnnotationItem>, recordHistory?: boolean) => void;
   onDelete: (id: string) => void;
   onCopyMarkdown: () => void;
+  isMobileDrawer?: boolean;
+  onClose?: () => void;
+  className?: string;
 }
 
 export const AnnotationSidebar: React.FC<AnnotationSidebarProps> = ({
@@ -38,6 +42,9 @@ export const AnnotationSidebar: React.FC<AnnotationSidebarProps> = ({
   onUpdate,
   onDelete,
   onCopyMarkdown,
+  isMobileDrawer = false,
+  onClose,
+  className = '',
 }) => {
   const [filterStatus, setFilterStatus] = useState<string>('all');
 
@@ -59,25 +66,43 @@ export const AnnotationSidebar: React.FC<AnnotationSidebarProps> = ({
     return ann.status === filterStatus;
   }).sort((a, b) => a.sequence - b.sequence);
 
+  const containerClasses = className || (
+    isMobileDrawer
+      ? 'w-full flex flex-col h-full select-none bg-card'
+      : 'w-80 border-l border-border bg-card/60 flex flex-col h-full select-none shrink-0 z-10'
+  );
+
   return (
-    <aside className="w-80 border-l border-border bg-card/60 flex flex-col h-full select-none shrink-0 z-10">
+    <aside className={containerClasses}>
       {/* Sidebar Header */}
       <div className="p-3 border-b border-border flex items-center justify-between gap-2">
-        <div className="flex items-center gap-1.5">
-          <Layers className="w-4 h-4 text-primary" />
-          <h3 className="font-bold text-xs uppercase tracking-wider text-foreground">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <Layers className="w-4 h-4 text-primary shrink-0" />
+          <h3 className="font-bold text-xs uppercase tracking-wider text-foreground truncate">
             Danh sách điểm ({annotations.length})
           </h3>
         </div>
-        <button
-          type="button"
-          onClick={onCopyMarkdown}
-          className="p-1 px-2 rounded-lg bg-muted hover:bg-accent text-[11px] font-semibold text-muted-foreground hover:text-foreground flex items-center gap-1 transition"
-          title="Sao chép danh sách thành bảng Markdown"
-        >
-          <Copy className="w-3 h-3" />
-          <span>Copy MD</span>
-        </button>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            onClick={onCopyMarkdown}
+            className="p-1 px-2 rounded-lg bg-muted hover:bg-accent text-[11px] font-semibold text-muted-foreground hover:text-foreground flex items-center gap-1 transition"
+            title="Sao chép danh sách thành bảng Markdown"
+          >
+            <Copy className="w-3 h-3" />
+            <span>Copy MD</span>
+          </button>
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="p-1 rounded-lg bg-muted hover:bg-accent text-muted-foreground hover:text-foreground transition ml-0.5"
+              title="Đóng danh sách"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Filter Tabs */}

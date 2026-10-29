@@ -162,13 +162,13 @@ export function useAnnotationEngine({
 
   // Zoom controls
   const zoomIn = useCallback(() => setZoom((z) => Math.min(4.0, Number((z + 0.25).toFixed(2)))), []);
-  const zoomOut = useCallback(() => setZoom((z) => Math.max(0.25, Number((z - 0.25).toFixed(2)))), []);
+  const zoomOut = useCallback(() => setZoom((z) => Math.max(0.02, Number((z - 0.25).toFixed(2)))), []);
   const resetZoom = useCallback(() => {
     setZoom(1.0);
     setPan({ x: 0, y: 0 });
   }, []);
-  const fitToScreen = useCallback(() => {
-    setZoom(1.0);
+  const fitToScreen = useCallback((targetZoom?: number) => {
+    setZoom(targetZoom !== undefined ? targetZoom : 1.0);
     setPan({ x: 0, y: 0 });
   }, []);
 

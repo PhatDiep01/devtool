@@ -25,7 +25,7 @@ import { JiraSprint, JiraIssue, JiraBoardColumn } from '../../../types';
 import { IssueDetailModal } from '../components/IssueDetailModal';
 import { CreateIssueModal } from '../components/CreateIssueModal';
 import { LogWorkModal } from '../components/LogWorkModal';
-import { SearchableSelect, SelectOption } from '../../../components/ui';
+import { SearchableSelect, SelectOption, ConfirmModal } from '../../../components/ui';
 import { toast } from 'react-hot-toast';
 import { usePageTitle } from '../../../utils/usePageTitle';
 
@@ -58,6 +58,16 @@ export const KanbanBoard: React.FC = () => {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [logWorkKey, setLogWorkKey] = useState<string | null>(null);
   const [logWorkSummary, setLogWorkSummary] = useState<string>('');
+
+  // Status transition confirmation state
+  const [pendingMove, setPendingMove] = useState<{
+    issueKey: string;
+    issueSummary?: string;
+    targetColId: string;
+    targetColName: string;
+    currentStatusName?: string;
+  } | null>(null);
+  const [isMoving, setIsMoving] = useState(false);
 
   useEffect(() => {
     if (!boardId) return;
@@ -262,12 +272,44 @@ export const KanbanBoard: React.FC = () => {
     }
   };
 
+  const requestMove = (draggableId: string, targetColId: string) => {
+    const targetCol = columns.find(c => c.id === targetColId);
+    if (!targetCol) return;
+    const issue = issues.find(i => i.key === draggableId);
+    const currentStatus = issue?.fields?.status?.name || 'Hiện tại';
+    
+    // Check if destination column is already the current status column
+    if (targetCol.name.toLowerCase() === currentStatus.toLowerCase()) {
+      return;
+    }
+
+    setPendingMove({
+      issueKey: draggableId,
+      issueSummary: issue?.fields?.summary,
+      targetColId,
+      targetColName: targetCol.name,
+      currentStatusName: currentStatus
+    });
+  };
+
+  const confirmMove = async () => {
+    if (!pendingMove) return;
+    setIsMoving(true);
+    try {
+      await moveIssueToColumn(pendingMove.issueKey, pendingMove.targetColId);
+    } finally {
+      setIsMoving(false);
+      setPendingMove(null);
+    }
+  };
+
   const onDragEnd = async (result: DropResult) => {
     const { destination, source, draggableId } = result;
     if (!destination) return;
     if (destination.droppableId === source.droppableId && destination.index === source.index) return;
+    if (destination.droppableId === source.droppableId) return;
 
-    await moveIssueToColumn(draggableId, destination.droppableId);
+    requestMove(draggableId, destination.droppableId);
   };
 
   // Color theme generator for dynamic columns
@@ -368,10 +410,10 @@ export const KanbanBoard: React.FC = () => {
           </button>
           <div className="hidden sm:block h-4 w-px bg-border" />
           <div>
-            <h2 className="text-lg sm:text-xl font-extrabold tracking-tight text-foreground flex items-center gap-2">
+            <h2 className="text-lg sm:text-xl font-bold tracking-tight text-foreground flex items-center gap-2">
               <span>Kanban Board</span>
-              <span className="text-xs px-2 py-0.5 rounded-full bg-accent border border-border text-muted-foreground font-mono font-normal">
-                {columns.length} Trạng Thái
+              <span className="text-xs px-2.5 py-0.5 rounded-full bg-accent border border-border text-muted-foreground font-medium tabular-nums">
+                {columns.length} cột trạng thái
               </span>
             </h2>
           </div>
@@ -394,7 +436,7 @@ export const KanbanBoard: React.FC = () => {
           <button
             onClick={() => selectedSprintId && loadSprintIssues(Number(selectedSprintId))}
             className="p-2 rounded-xl border border-border hover:bg-accent text-muted-foreground transition-colors shrink-0"
-            title="Refresh sprint tasks"
+            title="Làm mới danh sách công việc trong sprint"
           >
             <RefreshCw className="w-4 h-4" />
           </button>
@@ -402,10 +444,10 @@ export const KanbanBoard: React.FC = () => {
           <button
             type="button"
             onClick={() => setShowCreateModal(true)}
-            className="px-3 py-1.5 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-bold transition shadow-sm flex items-center gap-1.5"
+            className="px-3 py-1.5 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-semibold transition shadow-xs flex items-center gap-1.5"
           >
             <Plus className="w-3.5 h-3.5" />
-            <span>Create Issue</span>
+            <span>Tạo Issue</span>
           </button>
         </div>
       </div>
@@ -417,7 +459,7 @@ export const KanbanBoard: React.FC = () => {
           <button
             type="button"
             onClick={() => setHideSubtasks(!hideSubtasks)}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-bold transition border shadow-xs ${
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-semibold transition border shadow-xs ${
               hideSubtasks
                 ? 'bg-blue-500/10 border-blue-500/30 text-blue-600 dark:text-blue-400 hover:bg-blue-500/15'
                 : 'bg-background border-border text-muted-foreground hover:bg-accent hover:text-foreground'
@@ -632,7 +674,7 @@ export const KanbanBoard: React.FC = () => {
                                       {prevCol && (
                                         <button
                                           type="button"
-                                          onClick={() => moveIssueToColumn(item.key, prevCol.id)}
+                                          onClick={() => requestMove(item.key, prevCol.id)}
                                           className="p-1 rounded-md bg-muted hover:bg-accent text-muted-foreground hover:text-foreground text-[10px] transition"
                                           title={`Chuyển lùi về: ${prevCol.name}`}
                                         >
@@ -642,7 +684,7 @@ export const KanbanBoard: React.FC = () => {
                                       {nextCol && (
                                         <button
                                           type="button"
-                                          onClick={() => moveIssueToColumn(item.key, nextCol.id)}
+                                          onClick={() => requestMove(item.key, nextCol.id)}
                                           className="inline-flex items-center gap-0.5 px-2 py-1 rounded-md bg-primary/10 text-primary hover:bg-primary/20 text-[10px] font-bold transition"
                                           title={`Chuyển tiếp sang: ${nextCol.name}`}
                                         >
@@ -695,6 +737,30 @@ export const KanbanBoard: React.FC = () => {
           onSuccess={() => selectedSprintId && loadSprintIssues(Number(selectedSprintId))}
         />
       )}
+
+      {/* Confirm Status Transition Modal */}
+      <ConfirmModal
+        isOpen={!!pendingMove}
+        title="Xác nhận chuyển trạng thái"
+        description={
+          pendingMove ? (
+            <span>
+              Bạn có chắc chắn muốn chuyển trạng thái công việc{' '}
+              <strong className="text-foreground">{pendingMove.issueKey}</strong>
+              {pendingMove.issueSummary ? ` (${pendingMove.issueSummary})` : ''} sang cột{' '}
+              <span className="font-semibold text-primary">"{pendingMove.targetColName}"</span> không?
+            </span>
+          ) : ''
+        }
+        confirmText="Xác nhận chuyển"
+        cancelText="Hủy bỏ"
+        variant="primary"
+        loading={isMoving}
+        onConfirm={confirmMove}
+        onClose={() => {
+          if (!isMoving) setPendingMove(null);
+        }}
+      />
     </div>
   );
 };
