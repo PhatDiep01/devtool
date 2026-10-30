@@ -1,27 +1,52 @@
+# ==============================================================================
+# Git Ignore Configuration for DevToolkit Sub-Package
+# ==============================================================================
+
+# Dependencies
 node_modules/
 dist/
-.env
-.env.local
-*.db
-*.db-journal
 
-# Backend
+# Logs
+*.log
+*.log.*
+logs/
+service-stdout.log
+service-stderr.log
+backend/service-stdout.log
+backend/service-stderr.log
+
+# Environment
+.env
+.env.*
+.env.local
+!.env.example
+
+# Databases
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Backend uploads
 backend/data/images/*
 !backend/data/images/.gitkeep
 
-# Frontend
+# Frontend & Caches
 frontend/.firebase/
+.firebase/
+.cache/
 
-# OS
+# OS & Editors
 .DS_Store
 Thumbs.db
 *.swp
-
-# IDE
+*.swo
+*.sw?
 .vscode/
 .idea/
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
-*.sw?
