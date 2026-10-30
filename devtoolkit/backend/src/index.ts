@@ -20,6 +20,7 @@ import jiraRoutes from './routes/jira.routes';
 import settingsRoutes from './routes/settings.routes';
 import stickyNotesRoutes from './routes/sticky-notes.routes';
 import apiDocsRoutes from './routes/api-docs.routes';
+import aclRoutes from './routes/acl.routes';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -53,7 +54,52 @@ app.use(cors({
   exposedHeaders: ['X-App-Build-Id', 'X-App-Version']
 }));
 
-app.use(morgan('dev'));
+// Sanitize URL for logging to prevent leaking sensitive query tokens (e.g. jira_token, token, password, secret)
+function sanitizeLoggedUrl(rawUrl: string): string {
+  if (!rawUrl || typeof rawUrl !== 'string') return rawUrl;
+  try {
+    const [pathPart, queryPart] = rawUrl.split('?');
+    if (!queryPart) return pathPart;
+    const params = new URLSearchParams(queryPart);
+    const SENSITIVE_PARAM_REGEX = /token|secret|password|key|auth|session|credential|pwd|bearer/i;
+    let modified = false;
+    for (const key of Array.from(params.keys())) {
+      if (SENSITIVE_PARAM_REGEX.test(key)) {
+        params.set(key, '[REDACTED]');
+        modified = true;
+      }
+    }
+    return modified ? `${pathPart}?${params.toString()}` : rawUrl;
+  } catch {
+    return rawUrl;
+  }
+}
+
+morgan.token('clean-url', (req: express.Request) => {
+  return sanitizeLoggedUrl(req.originalUrl || req.url || '');
+});
+
+morgan.format('safe-dev', (tokens: any, req: any, res: any) => {
+  const statusStr = tokens.status(req, res);
+  const statusNum = statusStr ? parseInt(statusStr, 10) : 0;
+  const color = !statusNum ? 0
+    : statusNum >= 500 ? 31
+    : statusNum >= 400 ? 33
+    : statusNum >= 300 ? 36
+    : statusNum >= 200 ? 32
+    : 0;
+
+  const cleanUrl = tokens['clean-url'] ? tokens['clean-url'](req, res) : (tokens.url(req, res) || '');
+
+  return [
+    `\x1b[0m${tokens.method(req, res)}`,
+    cleanUrl,
+    `\x1b[${color}m${statusStr || '-'}\x1b[0m`,
+    `${tokens['response-time'](req, res)} ms - ${tokens.res(req, res, 'content-length') || '-'}\x1b[0m`
+  ].join(' ');
+});
+
+app.use(morgan('safe-dev'));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
@@ -102,6 +148,7 @@ app.use('/api/files', filesRoutes);
 app.use('/api/bugs', bugsRoutes);
 app.use('/api/api-docs', apiDocsRoutes);
 app.use('/api/sticky-notes', stickyNotesRoutes);
+app.use('/api/acl', aclRoutes);
 
 // Jira routes (authentication strictly enforced by jiraAuthMiddleware inside router)
 app.use('/api/jira', jiraRoutes);

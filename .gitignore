@@ -1,0 +1,85 @@
+# ==============================================================================
+# Git Ignore Configuration for DevToolkit
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. Security & Logs (Crucial: Never expose logs on GitHub)
+# ------------------------------------------------------------------------------
+*.log
+*.log.*
+logs/
+**/logs/
+service-stdout.log
+service-stderr.log
+devtoolkit/backend/service-stdout.log
+devtoolkit/backend/service-stderr.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ------------------------------------------------------------------------------
+# 2. Databases & Runtime State (Prevent leaking sessions, credentials & WAL)
+# ------------------------------------------------------------------------------
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.db.bak
+*.sqlite
+*.sqlite3
+data_docs_tooldev/*.db
+data_docs_tooldev/*.db-shm
+data_docs_tooldev/*.db-wal
+data_docs_tooldev/*.db-journal
+data_docs_tooldev/backups/*.bak
+data_docs_tooldev/backups/*.db*
+
+# ------------------------------------------------------------------------------
+# 3. User Private Data & Scratchpads (May contain internal passwords / links)
+# ------------------------------------------------------------------------------
+data_docs_tooldev/sticky_notes/
+data_docs_tooldev/bug_files/
+
+# ------------------------------------------------------------------------------
+# 4. Environment Variables & Secrets
+# ------------------------------------------------------------------------------
+.env
+.env.*
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+!.env.example
+
+# ------------------------------------------------------------------------------
+# 5. Dependencies
+# ------------------------------------------------------------------------------
+node_modules/
+**/node_modules/
+
+# ------------------------------------------------------------------------------
+# 6. Build Outputs & Deployment Caches
+# ------------------------------------------------------------------------------
+dist/
+**/dist/
+build/
+**/build/
+.cache/
+.firebase/
+**/.firebase/
+
+# ------------------------------------------------------------------------------
+# 7. Operating System & IDE Files
+# ------------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.sw?
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
