@@ -47,10 +47,14 @@ function extractToc(markdown: string): TocItem[] {
   const items: TocItem[] = [];
 
   for (const line of lines) {
-    const match = /^(#{1,3})\s+(.+)$/.exec(line);
+    const match = /^(#{1,4})\s+(.+)$/.exec(line);
     if (match) {
       const level = match[1].length;
-      const rawTitle = match[2].trim().replace(/\*{1,2}|_{1,2}|`|~~/g, '');
+      let rawTitle = match[2].trim();
+      // Clean leading bullet marks if any (e.g. "## - **KEY**")
+      rawTitle = rawTitle.replace(/^[-\s*]+/, '');
+      rawTitle = rawTitle.replace(/\*{1,2}|_{1,2}|`|~~/g, '').trim();
+      if (!rawTitle) continue;
       const id = slugifyHeading(rawTitle);
       items.push({ id, title: rawTitle, level });
     }
@@ -555,7 +559,7 @@ export const ScreenDetail: React.FC = () => {
                             : 'text-muted-foreground hover:text-foreground hover:bg-accent/60'
                         }`}
                         style={{
-                          paddingLeft: item.level === 3 ? '1.25rem' : '0.625rem',
+                          paddingLeft: item.level === 4 ? '1.75rem' : item.level === 3 ? '1.25rem' : item.level === 2 ? '0.625rem' : '0.375rem',
                         }}
                         title={item.title}
                       >
