@@ -596,11 +596,11 @@ describe('Jira Dedicated Authentication & Public Handover Docs API Test Suite', 
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
       `).run(
         sessionTokenA,
-        'phatdm',
-        'phatdm@ascvn.com.vn',
-        'Doan Minh Phat',
+        'user_a',
+        'user_a@example.com',
+        'Test User A',
         null,
-        'https://task.ascvn.com.vn',
+        'https://jira.example.com',
         'pwdA',
         'basic',
         futureDate
@@ -613,11 +613,11 @@ describe('Jira Dedicated Authentication & Public Handover Docs API Test Suite', 
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
       `).run(
         sessionTokenB,
-        'KhaiDPQ',
-        'khaidpq@ascvn.com.vn',
-        'Khai Do Pham Quang',
+        'user_b',
+        'user_b@example.com',
+        'Test User B',
         null,
-        'https://task.ascvn.com.vn',
+        'https://jira.example.com',
         'pwdB',
         'basic',
         futureDate
@@ -629,17 +629,17 @@ describe('Jira Dedicated Authentication & Public Handover Docs API Test Suite', 
       });
       assert.equal(resA.status, 200);
       assert.equal(resA.data.authenticated, true);
-      assert.equal(resA.data.user.username, 'phatdm');
-      assert.equal(resA.data.user.emailAddress, 'phatdm@ascvn.com.vn');
+      assert.equal(resA.data.user.username, 'user_a');
+      assert.equal(resA.data.user.emailAddress, 'user_a@example.com');
 
-      // Verify User B session returns KhaiDPQ and does not collide with User A
+      // Verify User B session returns user_b and does not collide with User A
       const resB = await makeRequest('/api/jira/auth/session', {
         headers: { Authorization: `Bearer ${sessionTokenB}` }
       });
       assert.equal(resB.status, 200);
       assert.equal(resB.data.authenticated, true);
-      assert.equal(resB.data.user.username, 'KhaiDPQ');
-      assert.equal(resB.data.user.emailAddress, 'khaidpq@ascvn.com.vn');
+      assert.equal(resB.data.user.username, 'user_b');
+      assert.equal(resB.data.user.emailAddress, 'user_b@example.com');
 
       // Clean up
       db.prepare('DELETE FROM jira_sessions WHERE token IN (?, ?)').run(sessionTokenA, sessionTokenB);

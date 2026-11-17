@@ -145,8 +145,7 @@ export const resolveApiUrl = (path: string): string => {
 
 /**
  * Proxies Jira avatar, issue type, and priority images through the backend
- * to bypass internal LAN IP restrictions (e.g. task.ascvn.com.vn on 192.168.0.240)
- * and Chrome Private Network Access / CORS restrictions.
+ * to bypass internal network restrictions and Chrome Private Network Access / CORS restrictions.
  */
 export const getJiraProxyImageUrl = (url?: string | null): string => {
   if (!url) return '';
