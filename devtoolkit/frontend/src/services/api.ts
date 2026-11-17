@@ -248,7 +248,7 @@ export const docsApi = {
   getScreens: (params?: { moduleId?: number | string; status?: string; q?: string; search?: string }) =>
     api.get<Screen[]>('/api/docs/screens', { params }),
   getScreensByModule: (slug: string) => api.get<Screen[]>(`/api/docs/modules/${slug}/screens`),
-  getScreen: (id: number) => api.get<Screen>(`/api/docs/screens/${id}`),
+  getScreen: (id: number | string) => api.get<Screen>(`/api/docs/screens/${id}`),
   createScreen: (data: {
     moduleId: number;
     title: string;
@@ -459,6 +459,8 @@ export const apiDocsApi = {
     api.put<ApiErrorCode>(`/api/api-docs/error-codes/${id}`, data),
   deleteErrorCode: (id: number) =>
     api.delete<{ message: string }>(`/api/api-docs/error-codes/${id}`),
+  deleteErrorCodesBatch: (data: { ids?: number[]; moduleId?: number; deleteAll?: boolean }) =>
+    api.post<{ message: string; count: number }>('/api/api-docs/error-codes/batch-delete', data),
 
   // Environments
   getEnvironments: (moduleId?: number | string) =>
@@ -467,6 +469,8 @@ export const apiDocsApi = {
     api.put<ApiEnvironment[]>('/api/api-docs/environments', { moduleId, environments }),
 
   // Import
+  fetchRemoteSpecUrl: (url: string) =>
+    api.post<any>('/api/api-docs/import/url', { url }),
   importCurl: (data: { curl: string; moduleId: number; folder?: string }) =>
     api.post<{ message: string; endpoint: ApiEndpoint }>('/api/api-docs/import/curl', data),
   importOpenApi: (data: { spec: any; moduleId: number; defaultFolder?: string; conflictStrategy?: 'skip' | 'overwrite' | 'keep_both' }) =>
@@ -499,6 +503,10 @@ export const apiDocsApi = {
       body: any;
       rawBody: string;
       isJson: boolean;
+      isBinary?: boolean;
+      base64Data?: string;
+      fileName?: string;
+      contentType?: string;
     }>('/api/api-docs/proxy-test', data),
 
   saveResponseAsExample: (endpointId: number, data: {
@@ -508,6 +516,58 @@ export const apiDocsApi = {
     body: any;
   }) =>
     api.post<{ success: boolean; message: string; responses: any[] }>(`/api/api-docs/endpoints/${endpointId}/save-response-example`, data),
+};
+
+export const aclApi = {
+  getConnections: () => api.get<any[]>('/api/acl/connections'),
+  createConnection: (data: any) => api.post<any>('/api/acl/connections', data),
+  updateConnection: (id: string, data: any) => api.put<any>(`/api/acl/connections/${id}`, data),
+  deleteConnection: (id: string) => api.delete<{ success: boolean }>(`/api/acl/connections/${id}`),
+  testConnection: (data: {
+    id?: string;
+    server: string;
+    database: string;
+    authType: 'sql' | 'windows';
+    username?: string;
+    password?: string;
+    timeoutSeconds?: number;
+  }) =>
+    api.post<{
+      success: boolean;
+      status?: string;
+      latencyMs?: number;
+      hardwareFingerprint?: string;
+      serverName?: string;
+      databaseName?: string;
+      databaseId?: string;
+      serviceBrokerGuid?: string;
+      message?: string;
+      error?: string;
+    }>('/api/acl/connections/test', data),
+  importConnections: (connections: any[]) =>
+    api.post<{ success: boolean; importedCount: number }>('/api/acl/connections/import', { connections }),
+  exportConnections: () => api.get<any[]>('/api/acl/connections/export'),
+  getSnapshot: (connectionId: string) =>
+    api.get<{
+      success: boolean;
+      connection: any;
+      modules: any[];
+      functions: any[];
+      actions: any[];
+      hasTables?: {
+        hasModules?: boolean;
+        hasFunctions?: boolean;
+        hasActions?: boolean;
+      };
+      summary?: {
+        modulesCount: number;
+        functionsCount: number;
+        actionsCount: number;
+        dataHash: string;
+        fetchedAt: string;
+      };
+      error?: string;
+    }>(`/api/acl/connections/${connectionId}/snapshot`),
 };
 
 export default api;

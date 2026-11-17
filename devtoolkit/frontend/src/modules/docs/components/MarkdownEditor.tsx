@@ -1,11 +1,20 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { 
+  useState, 
+  useRef, 
+  useEffect, 
+  useCallback, 
+  useImperativeHandle, 
+  forwardRef 
+} from 'react';
 import { 
   Bold, 
   Italic, 
   Strikethrough, 
+  Heading,
   Heading1, 
   Heading2, 
   Heading3, 
+  Heading4,
   List, 
   ListOrdered, 
   CheckSquare, 
@@ -31,16 +40,28 @@ import {
   Plus,
   Trash2,
   ChevronDown,
+  Maximize2,
+  Minimize2,
+  Undo2,
+  Redo2,
+  AlignLeft,
   Sliders,
-  Maximize2
+  Terminal,
+  FileSpreadsheet
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { filesApi, resolveApiUrl } from '../../../services/api';
 import { MarkdownRenderer } from './MarkdownRenderer';
-import { markdownToHtml, htmlToMarkdown } from '../../../utils/markdownConverter';
+import { formatMarkdownTable } from '../../../utils/markdownConverter';
 import { ImageResizeModal } from './ImageResizeModal';
 
-interface MarkdownEditorProps {
+export interface MarkdownEditorRef {
+  insertTextAtCursor: (text: string) => void;
+  focus: () => void;
+  getValue: () => string;
+}
+
+export interface MarkdownEditorProps {
   value: string;
   onChange: (value: string) => void;
   onSave?: () => void;
@@ -51,470 +72,401 @@ interface MarkdownEditorProps {
   onDeleteImage?: (imageSrc: string) => void;
 }
 
-export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
+interface HistoryItem {
+  value: string;
+  selectionStart: number;
+  selectionEnd: number;
+}
+
+export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>(({
   value,
   onChange,
   onSave,
   isSaving = false,
-  minHeight = '520px',
-  placeholder = 'Nhập nội dung đặc tả tại đây...',
+  minHeight = '550px',
+  placeholder = 'Nhập nội dung đặc tả tại đây (hỗ trợ đầy đủ GitHub Flavored Markdown)...',
   onUploadImage,
   onDeleteImage,
-}) => {
-  // Default to 'visual' (WYSIWYG) mode as requested to make it easy for no-tech users
-  const [viewMode, setViewMode] = useState<'visual' | 'split' | 'edit' | 'preview'>('visual');
+}, ref) => {
+  // Default to 'split' (Split View: Markdown left, Live Preview right) for modern & smooth editing experience
+  const [viewMode, setViewMode] = useState<'split' | 'edit' | 'preview'>('split');
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
-  const [showTemplates, setShowTemplates] = useState(false);
-  const [showCallouts, setShowCallouts] = useState(false);
+
+  // Dropdown states
   const [showHeadings, setShowHeadings] = useState(false);
-  const [showTableTools, setShowTableTools] = useState(false);
+  const [showCallouts, setShowCallouts] = useState(false);
+  const [showCodeBlocks, setShowCodeBlocks] = useState(false);
+  const [showTableModal, setShowTableModal] = useState(false);
+  const [showTemplates, setShowTemplates] = useState(false);
 
-  // Hover and Interactive Resize state for Images in WYSIWYG
-  const [hoveredImage, setHoveredImage] = useState<HTMLImageElement | null>(null);
-  const [hoveredImageRect, setHoveredImageRect] = useState<{
-    top: number;
-    left: number;
-    width: number;
-    height: number;
-  } | null>(null);
-  const [isResizingDrag, setIsResizingDrag] = useState(false);
-  const [dragCurrentWidth, setDragCurrentWidth] = useState<number | null>(null);
+  // Table creator state
+  const [tableRows, setTableRows] = useState(3);
+  const [tableCols, setTableCols] = useState(3);
 
-  // Configuration Modal state (opened when clicking directly on image or clicking Sliders icon)
-  const [editorModalImage, setEditorModalImage] = useState<{
+  // Image customizer modal state
+  const [resizeImageState, setResizeImageState] = useState<{
+    file: File | null;
     url?: string;
     alt?: string;
-    file?: File | null;
-    initialWidth?: number;
-    initialHeight?: number;
-    targetElement?: HTMLImageElement | null;
+    targetWidth?: number;
   } | null>(null);
 
+  // Cursor position indicators
+  const [cursorPos, setCursorPos] = useState({ line: 1, col: 1 });
+
+  // Refs
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const visualRef = useRef<HTMLDivElement>(null);
-  const visualContainerRef = useRef<HTMLDivElement>(null);
+  const previewRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const isUpdatingFromProps = useRef<boolean>(false);
-  const hoverTimeoutRef = useRef<any>(null);
-  const dragStartInfo = useRef<{ startX: number; startWidth: number; img: HTMLImageElement } | null>(null);
+  const isSyncingScrollRef = useRef(false);
 
-  // Sync value to visual editor when switching to visual mode or initial mount
+  // Undo / Redo history
+  const historyRef = useRef<HistoryItem[]>([]);
+  const historyIndexRef = useRef<number>(-1);
+  const isPerformingHistoryActionRef = useRef<boolean>(false);
+  const debounceHistoryTimerRef = useRef<any>(null);
+
+  // Initialize history
   useEffect(() => {
-    if (viewMode === 'visual' && visualRef.current) {
-      const currentHtml = visualRef.current.innerHTML;
-      const expectedHtml = markdownToHtml(value);
-      // Only update if fundamentally different to preserve cursor and avoid loops
-      if (htmlToMarkdown(currentHtml).trim() !== value.trim()) {
-        isUpdatingFromProps.current = true;
-        visualRef.current.innerHTML = expectedHtml;
-        isUpdatingFromProps.current = false;
-      }
+    if (historyRef.current.length === 0 && value !== undefined) {
+      historyRef.current = [{
+        value,
+        selectionStart: 0,
+        selectionEnd: 0
+      }];
+      historyIndexRef.current = 0;
     }
-  }, [viewMode, value]);
-
-  // Handle changes inside Visual Editor
-  const handleVisualInput = useCallback(() => {
-    if (isUpdatingFromProps.current || !visualRef.current) return;
-    const html = visualRef.current.innerHTML;
-    const newMarkdown = htmlToMarkdown(html);
-    onChange(newMarkdown);
-  }, [onChange]);
-
-  // Helper to accurately position floating toolbar over the hovered image
-  const updateImageRect = useCallback((img: HTMLImageElement) => {
-    if (!visualContainerRef.current) return;
-    const containerRect = visualContainerRef.current.getBoundingClientRect();
-    const imgRect = img.getBoundingClientRect();
-    setHoveredImage(img);
-    setHoveredImageRect({
-      top: imgRect.top - containerRect.top + visualContainerRef.current.scrollTop,
-      left: imgRect.left - containerRect.left + visualContainerRef.current.scrollLeft,
-      width: imgRect.width,
-      height: imgRect.height,
-    });
   }, []);
 
-  // Listen for image deletions inside visual editor (e.g. Backspace, Cut, Delete key)
-  useEffect(() => {
-    if (viewMode !== 'visual' || !visualRef.current) return;
+  // Update history on changes
+  const recordHistory = useCallback((newValue: string, selStart?: number, selEnd?: number) => {
+    if (isPerformingHistoryActionRef.current) return;
 
-    const observer = new MutationObserver((mutations) => {
-      if (isUpdatingFromProps.current) return;
+    if (debounceHistoryTimerRef.current) {
+      clearTimeout(debounceHistoryTimerRef.current);
+    }
 
-      mutations.forEach((mutation) => {
-        mutation.removedNodes.forEach((node) => {
-          if (node.nodeName === 'IMG') {
-            const img = node as HTMLImageElement;
-            const src = img.getAttribute('data-doc-src') || img.src;
-            if (src && onDeleteImage) {
-              onDeleteImage(src);
-            }
-          } else if ((node as HTMLElement).querySelectorAll) {
-            const imgs = (node as HTMLElement).querySelectorAll('img');
-            imgs.forEach((img) => {
-              const src = img.getAttribute('data-doc-src') || img.src;
-              if (src && onDeleteImage) {
-                onDeleteImage(src);
-              }
-            });
-          }
+    debounceHistoryTimerRef.current = setTimeout(() => {
+      const curStart = selStart !== undefined ? selStart : (textareaRef.current?.selectionStart || 0);
+      const curEnd = selEnd !== undefined ? selEnd : (textareaRef.current?.selectionEnd || 0);
+
+      // Truncate future branch if user edits after undo
+      const newHistory = historyRef.current.slice(0, historyIndexRef.current + 1);
+      
+      // Only push if different from current top
+      const top = newHistory[newHistory.length - 1];
+      if (!top || top.value !== newValue) {
+        newHistory.push({
+          value: newValue,
+          selectionStart: curStart,
+          selectionEnd: curEnd
         });
-      });
-    });
-
-    observer.observe(visualRef.current, { childList: true, subtree: true });
-
-    return () => {
-      observer.disconnect();
-    };
-  }, [viewMode, onDeleteImage]);
-
-  // Handle mouse move over images in Visual mode
-  const handleVisualMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (isResizingDrag) return;
-    let target = e.target as HTMLElement | null;
-    if (target && target.tagName === 'IMG') {
-      if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
-      updateImageRect(target as HTMLImageElement);
-    }
-  };
-
-  const handleVisualMouseLeave = () => {
-    if (isResizingDrag) return;
-    hoverTimeoutRef.current = setTimeout(() => {
-      setHoveredImage(null);
-      setHoveredImageRect(null);
-    }, 400);
-  };
-
-  // Clicking directly on an image opens the configuration popup modal
-  const handleVisualClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    const target = e.target as HTMLElement | null;
-    if (target && target.tagName === 'IMG') {
-      const img = target as HTMLImageElement;
-      e.stopPropagation();
-      e.preventDefault();
-
-      const widthAttr = img.getAttribute('width');
-      const styleW = img.style?.width;
-      const initialW = parseInt(widthAttr || styleW || '') || img.naturalWidth || Math.round(img.offsetWidth);
-      const initialH = img.naturalHeight || Math.round(img.offsetHeight);
-
-      setEditorModalImage({
-        url: img.getAttribute('data-doc-src') || img.src,
-        alt: img.alt || 'Hình ảnh',
-        initialWidth: initialW,
-        initialHeight: initialH,
-        targetElement: img,
-      });
-    }
-  };
-
-  // Apply quick resize preset from hover toolbar (25%, 50%, 75%, 100%, 800px)
-  const handleApplyPresetWidth = (preset: number | '800px') => {
-    if (!hoveredImage) return;
-    const img = hoveredImage;
-    const containerWidth = visualRef.current?.clientWidth || 800;
-    const naturalW = img.naturalWidth || img.offsetWidth;
-
-    let targetPx = 0;
-    if (preset === '800px') {
-      targetPx = Math.min(800, containerWidth);
-    } else {
-      targetPx = Math.round((Math.min(naturalW, containerWidth) * preset) / 100);
-    }
-
-    img.setAttribute('width', `${targetPx}`);
-    img.style.width = `${targetPx}px`;
-    img.style.maxWidth = '100%';
-    handleVisualInput();
-    updateImageRect(img);
-    toast.success(`Đã resize ảnh: ${targetPx}px (${preset})`);
-  };
-
-  // Delete image from hover toolbar
-  const handleDeleteHoveredImage = () => {
-    if (!hoveredImage) return;
-    const img = hoveredImage;
-    const src = img.getAttribute('data-doc-src') || img.src;
-
-    const parent = img.parentElement;
-    img.remove();
-    if (parent && parent.tagName === 'P' && parent.children.length === 0 && !parent.textContent?.trim()) {
-      parent.remove();
-    }
-
-    setHoveredImage(null);
-    setHoveredImageRect(null);
-    handleVisualInput();
-
-    if (onDeleteImage && src) {
-      onDeleteImage(src);
-    }
-    toast.success('Đã xóa ảnh khỏi tài liệu');
-  };
-
-  // Start interactive drag-to-resize handle at bottom-right
-  const handleStartDragResize = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (!hoveredImage) return;
-
-    const img = hoveredImage;
-    dragStartInfo.current = {
-      startX: e.clientX,
-      startWidth: img.offsetWidth,
-      img,
-    };
-    setIsResizingDrag(true);
-    setDragCurrentWidth(Math.round(img.offsetWidth));
-
-    const onMouseMove = (moveEvent: MouseEvent) => {
-      if (!dragStartInfo.current) return;
-      const { startX, startWidth, img: targetImg } = dragStartInfo.current;
-      const containerW = visualRef.current?.clientWidth || 900;
-      const deltaX = moveEvent.clientX - startX;
-      const newWidth = Math.max(100, Math.min(containerW, startWidth + deltaX));
-
-      targetImg.setAttribute('width', `${Math.round(newWidth)}`);
-      targetImg.style.width = `${Math.round(newWidth)}px`;
-      targetImg.style.maxWidth = '100%';
-      setDragCurrentWidth(Math.round(newWidth));
-      updateImageRect(targetImg);
-    };
-
-    const onMouseUp = () => {
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
-      setIsResizingDrag(false);
-      setDragCurrentWidth(null);
-      dragStartInfo.current = null;
-      handleVisualInput();
-    };
-
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
-  };
-
-  // Called when image is configured in modal
-  const handleConfirmModalResize = (
-    processedFile: File,
-    previewUrl: string,
-    metadata: { width: number; height: number; sizeBytes: number }
-  ) => {
-    if (editorModalImage?.targetElement) {
-      const img = editorModalImage.targetElement;
-      img.setAttribute('width', `${metadata.width}`);
-      img.style.width = `${metadata.width}px`;
-      img.style.maxWidth = '100%';
-      if (previewUrl && previewUrl.startsWith('blob:')) {
-        img.src = previewUrl;
+        if (newHistory.length > 60) newHistory.shift(); // Limit to 60 snapshots
+        historyRef.current = newHistory;
+        historyIndexRef.current = newHistory.length - 1;
       }
-      handleVisualInput();
-      updateImageRect(img);
-    }
-    setEditorModalImage(null);
-  };
+    }, 350);
+  }, []);
 
-  // Switch View Mode with clean state synchronization
-  const handleSwitchMode = (mode: 'visual' | 'split' | 'edit' | 'preview') => {
-    if (mode === viewMode) return;
-
-    if (viewMode === 'visual' && visualRef.current) {
-      // Sync from visual to markdown before leaving visual mode
-      const html = visualRef.current.innerHTML;
-      const newMd = htmlToMarkdown(html);
-      onChange(newMd);
-    } else if (mode === 'visual') {
-      // Sync from markdown to visual before entering visual mode
+  const handleUndo = useCallback(() => {
+    if (historyIndexRef.current > 0) {
+      isPerformingHistoryActionRef.current = true;
+      historyIndexRef.current--;
+      const snapshot = historyRef.current[historyIndexRef.current];
+      onChange(snapshot.value);
       setTimeout(() => {
-        if (visualRef.current) {
-          visualRef.current.innerHTML = markdownToHtml(value);
+        if (textareaRef.current) {
+          textareaRef.current.focus();
+          textareaRef.current.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd);
         }
-      }, 0);
+        isPerformingHistoryActionRef.current = false;
+      }, 10);
     }
+  }, [onChange]);
 
-    setViewMode(mode);
+  const handleRedo = useCallback(() => {
+    if (historyIndexRef.current < historyRef.current.length - 1) {
+      isPerformingHistoryActionRef.current = true;
+      historyIndexRef.current++;
+      const snapshot = historyRef.current[historyIndexRef.current];
+      onChange(snapshot.value);
+      setTimeout(() => {
+        if (textareaRef.current) {
+          textareaRef.current.focus();
+          textareaRef.current.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd);
+        }
+        isPerformingHistoryActionRef.current = false;
+      }, 10);
+    }
+  }, [onChange]);
+
+  // Expose imperative methods to parent
+  useImperativeHandle(ref, () => ({
+    insertTextAtCursor: (text: string) => {
+      insertBlock(text);
+    },
+    focus: () => {
+      textareaRef.current?.focus();
+    },
+    getValue: () => value,
+  }));
+
+  // Track cursor position for status bar
+  const updateCursorPosition = () => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const pos = textarea.selectionStart;
+    const textBefore = textarea.value.substring(0, pos);
+    const lines = textBefore.split('\n');
+    setCursorPos({
+      line: lines.length,
+      col: lines[lines.length - 1].length + 1
+    });
   };
 
-  // Helper to execute formatting command in Visual Mode
-  const execVisualCommand = (command: string, arg: string | undefined = undefined) => {
-    if (visualRef.current) {
-      visualRef.current.focus();
+  // Synchronized scroll between editor and preview
+  const handleEditorScroll = () => {
+    if (isSyncingScrollRef.current || viewMode !== 'split') return;
+    const textarea = textareaRef.current;
+    const preview = previewRef.current;
+    if (!textarea || !preview) return;
+
+    isSyncingScrollRef.current = true;
+    const editorScrollMax = textarea.scrollHeight - textarea.clientHeight;
+    if (editorScrollMax > 0) {
+      const scrollRatio = textarea.scrollTop / editorScrollMax;
+      const previewScrollMax = preview.scrollHeight - preview.clientHeight;
+      preview.scrollTop = scrollRatio * previewScrollMax;
     }
-    document.execCommand(command, false, arg);
-    handleVisualInput();
+    setTimeout(() => { isSyncingScrollRef.current = false; }, 50);
   };
 
-  // Insert markdown syntax around or at cursor in Textarea Mode
-  const insertText = useCallback((before: string, after: string = '', defaultText: string = '') => {
-    if (viewMode === 'visual') {
-      // In Visual mode, use standard commands
-      if (before === '**' && after === '**') execVisualCommand('bold');
-      else if (before === '*' && after === '*') execVisualCommand('italic');
-      else if (before === '~~' && after === '~~') execVisualCommand('strikeThrough');
-      else {
-        execVisualCommand('insertHTML', `${before}${defaultText}${after}`);
-      }
-      return;
-    }
+  const handlePreviewScroll = () => {
+    if (isSyncingScrollRef.current || viewMode !== 'split') return;
+    const textarea = textareaRef.current;
+    const preview = previewRef.current;
+    if (!textarea || !preview) return;
 
+    isSyncingScrollRef.current = true;
+    const previewScrollMax = preview.scrollHeight - preview.clientHeight;
+    if (previewScrollMax > 0) {
+      const scrollRatio = preview.scrollTop / previewScrollMax;
+      const editorScrollMax = textarea.scrollHeight - textarea.clientHeight;
+      textarea.scrollTop = scrollRatio * editorScrollMax;
+    }
+    setTimeout(() => { isSyncingScrollRef.current = false; }, 50);
+  };
+
+  // Insert or wrap text around selection
+  const insertText = useCallback((prefix: string, suffix: string = '', defaultText: string = '') => {
     const textarea = textareaRef.current;
     if (!textarea) return;
 
     const start = textarea.selectionStart;
     const end = textarea.selectionEnd;
     const selectedText = value.substring(start, end) || defaultText;
-    const replacement = `${before}${selectedText}${after}`;
+    const replacement = `${prefix}${selectedText}${suffix}`;
     const newValue = value.substring(0, start) + replacement + value.substring(end);
 
     onChange(newValue);
+    recordHistory(newValue, start + prefix.length, start + prefix.length + selectedText.length);
 
     setTimeout(() => {
       textarea.focus();
       textarea.setSelectionRange(
-        start + before.length,
-        start + before.length + selectedText.length
+        start + prefix.length,
+        start + prefix.length + selectedText.length
       );
+      updateCursorPosition();
     }, 10);
-  }, [value, onChange, viewMode]);
+  }, [value, onChange, recordHistory]);
 
-  // Insert text block at current cursor or newline
+  // Insert a full block of markdown at current line/cursor
   const insertBlock = useCallback((textToInsert: string) => {
-    if (viewMode === 'visual') {
-      const htmlBlock = markdownToHtml(textToInsert);
-      if (visualRef.current) visualRef.current.focus();
-      document.execCommand('insertHTML', false, htmlBlock);
-      handleVisualInput();
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      // Fallback: append
+      const newValue = value ? `${value.trim()}\n\n${textToInsert}\n` : `${textToInsert}\n`;
+      onChange(newValue);
+      recordHistory(newValue);
       return;
     }
 
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-
     const start = textarea.selectionStart;
     const end = textarea.selectionEnd;
-    const prefix = start > 0 && value[start - 1] !== '\n' ? '\n\n' : '';
-    const suffix = end < value.length && value[end] !== '\n' ? '\n\n' : '';
+    
+    // Ensure clean separation with empty lines
+    const prefix = start > 0 && value[start - 1] !== '\n' ? '\n\n' : (start > 1 && value[start - 2] !== '\n' ? '\n' : '');
+    const suffix = end < value.length && value[end] !== '\n' ? '\n\n' : '\n';
+    
     const replacement = `${prefix}${textToInsert}${suffix}`;
     const newValue = value.substring(0, start) + replacement + value.substring(end);
 
     onChange(newValue);
+    const newCursor = start + prefix.length + textToInsert.length;
+    recordHistory(newValue, newCursor, newCursor);
 
     setTimeout(() => {
       textarea.focus();
-      const newCursor = start + replacement.length;
       textarea.setSelectionRange(newCursor, newCursor);
+      updateCursorPosition();
     }, 10);
-  }, [value, onChange, viewMode, handleVisualInput]);
+  }, [value, onChange, recordHistory]);
 
-  // Visual Headings setter
-  const applyHeading = (tag: 'h1' | 'h2' | 'h3' | 'p') => {
-    if (viewMode === 'visual') {
-      execVisualCommand('formatBlock', tag.toUpperCase());
-    } else {
-      if (tag === 'h1') insertBlock('# Tiêu đề H1');
-      else if (tag === 'h2') insertBlock('## Tiêu đề H2');
-      else if (tag === 'h3') insertBlock('### Tiêu đề H3');
+  // Apply or toggle Heading on current line
+  const applyHeading = (level: 1 | 2 | 3 | 4 | 0) => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+
+    const start = textarea.selectionStart;
+    const lines = value.split('\n');
+    
+    // Find current line index
+    let currentLineIndex = 0;
+    let accumulatedLength = 0;
+    for (let i = 0; i < lines.length; i++) {
+      accumulatedLength += lines[i].length + 1;
+      if (start < accumulatedLength) {
+        currentLineIndex = i;
+        break;
+      }
     }
+
+    const currentLine = lines[currentLineIndex];
+    // Strip existing markdown heading markers
+    const cleanLine = currentLine.replace(/^#{1,6}\s+/, '');
+    
+    let newLine = cleanLine;
+    if (level > 0) {
+      newLine = `${'#'.repeat(level)} ${cleanLine}`;
+    }
+
+    lines[currentLineIndex] = newLine;
+    const newValue = lines.join('\n');
+    onChange(newValue);
+    recordHistory(newValue);
     setShowHeadings(false);
+
+    setTimeout(() => {
+      textarea.focus();
+      updateCursorPosition();
+    }, 10);
   };
 
-  // Visual Table Helpers
-  const insertVisualTable = () => {
-    if (viewMode === 'visual') {
-      const tableHtml = `
-        <table class="border-collapse border border-border my-4 w-full text-sm">
-          <thead>
-            <tr class="bg-muted/50">
-              <th class="border border-border p-2 font-bold text-left">Cột 1</th>
-              <th class="border border-border p-2 font-bold text-left">Cột 2</th>
-              <th class="border border-border p-2 font-bold text-left">Cột 3</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td class="border border-border p-2">Nội dung 1</td>
-              <td class="border border-border p-2">Nội dung 2</td>
-              <td class="border border-border p-2">Nội dung 3</td>
-            </tr>
-            <tr>
-              <td class="border border-border p-2">Nội dung 4</td>
-              <td class="border border-border p-2">Nội dung 5</td>
-              <td class="border border-border p-2">Nội dung 6</td>
-            </tr>
-          </tbody>
-        </table>
-        <p><br></p>
-      `;
-      execVisualCommand('insertHTML', tableHtml);
-    } else {
-      insertBlock('| Cột 1 | Cột 2 | Cột 3 |\n|---|---|---|\n| Giá trị 1 | Giá trị 2 | Giá trị 3 |\n| Giá trị 4 | Giá trị 5 | Giá trị 6 |');
-    }
+  // Apply Code Block
+  const applyCodeBlock = (lang: string = 'sql') => {
+    const textarea = textareaRef.current;
+    const start = textarea?.selectionStart || 0;
+    const end = textarea?.selectionEnd || 0;
+    const selected = value.substring(start, end);
+    const snippet = `\`\`\`${lang}\n${selected || '-- Nhập mã hoặc truy vấn tại đây\n'}\`\`\``;
+    insertBlock(snippet);
+    setShowCodeBlocks(false);
   };
 
-  // Table manipulation helpers (for active cell)
-  const modifyTable = (action: 'addRow' | 'deleteRow' | 'addCol' | 'deleteCol') => {
-    if (viewMode !== 'visual') return;
-    const sel = window.getSelection();
-    if (!sel || !sel.anchorNode) return;
+  // Insert Table generator
+  const handleInsertTable = () => {
+    const rows = Math.max(1, Math.min(20, tableRows));
+    const cols = Math.max(1, Math.min(10, tableCols));
 
-    let node: Node | null = sel.anchorNode;
-    while (node && node.nodeName !== 'TD' && node.nodeName !== 'TH') {
-      if (node === visualRef.current) break;
-      node = node.parentNode;
+    const header = '| ' + Array.from({ length: cols }, (_, i) => `Cột ${i + 1}`).join(' | ') + ' |';
+    const separator = '| ' + Array.from({ length: cols }, () => '---').join(' | ') + ' |';
+    const bodyRows = Array.from({ length: rows }, (_, r) => 
+      '| ' + Array.from({ length: cols }, (_, c) => `Giá trị ${r + 1}.${c + 1}`).join(' | ') + ' |'
+    );
+
+    const tableMd = [header, separator, ...bodyRows].join('\n');
+    insertBlock(tableMd);
+    setShowTableModal(false);
+    toast.success(`Đã chèn bảng ${cols} cột x ${rows} dòng`);
+  };
+
+  // Format the table near cursor
+  const handleBeautifyTable = () => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+
+    const start = textarea.selectionStart;
+    const lines = value.split('\n');
+
+    // Find table start and end lines around cursor
+    let tableStart = -1;
+    let tableEnd = -1;
+
+    let charCount = 0;
+    let currentLineIdx = 0;
+    for (let i = 0; i < lines.length; i++) {
+      charCount += lines[i].length + 1;
+      if (start < charCount) {
+        currentLineIdx = i;
+        break;
+      }
     }
 
-    if (!node || (node.nodeName !== 'TD' && node.nodeName !== 'TH')) {
-      toast('Hãy đặt con trỏ vào ô bảng cần thao tác', { icon: 'ℹ️' });
+    // Check if current line is part of a table
+    if (!lines[currentLineIdx]?.includes('|')) {
+      toast('Hãy đặt con trỏ vào bảng cần căn chỉnh!', { icon: 'ℹ️' });
       return;
     }
 
-    const cell = node as HTMLTableCellElement;
-    const row = cell.parentElement as HTMLTableRowElement;
-    const table = row.parentElement?.parentElement as HTMLTableElement;
-    if (!table) return;
-
-    if (action === 'addRow') {
-      const newRow = table.insertRow(row.rowIndex + 1);
-      for (let i = 0; i < row.cells.length; i++) {
-        const newCell = newRow.insertCell(i);
-        newCell.className = 'border border-border p-2';
-        newCell.innerHTML = 'Nội dung mới';
-      }
-      toast.success('Đã thêm dòng mới vào bảng');
-    } else if (action === 'deleteRow') {
-      if (table.rows.length <= 1) {
-        toast.error('Bảng chỉ còn 1 dòng, không thể xóa tiếp');
-        return;
-      }
-      table.deleteRow(row.rowIndex);
-      toast.success('Đã xóa dòng');
-    } else if (action === 'addCol') {
-      const colIdx = cell.cellIndex;
-      for (let r = 0; r < table.rows.length; r++) {
-        const rCells = table.rows[r];
-        const newCell = rCells.insertCell(colIdx + 1);
-        newCell.className = 'border border-border p-2';
-        newCell.innerHTML = r === 0 ? 'Cột mới' : 'Giá trị';
-      }
-      toast.success('Đã thêm cột mới vào bảng');
-    } else if (action === 'deleteCol') {
-      if (row.cells.length <= 1) {
-        toast.error('Bảng chỉ còn 1 cột, không thể xóa tiếp');
-        return;
-      }
-      const colIdx = cell.cellIndex;
-      for (let r = 0; r < table.rows.length; r++) {
-        table.rows[r].deleteCell(colIdx);
-      }
-      toast.success('Đã xóa cột');
+    // Find table boundaries
+    for (let i = currentLineIdx; i >= 0; i--) {
+      if (lines[i].includes('|')) tableStart = i;
+      else break;
+    }
+    for (let i = currentLineIdx; i < lines.length; i++) {
+      if (lines[i].includes('|')) tableEnd = i;
+      else break;
     }
 
-    handleVisualInput();
+    if (tableStart !== -1 && tableEnd !== -1) {
+      const tableLines = lines.slice(tableStart, tableEnd + 1);
+      const formatted = formatMarkdownTable(tableLines.join('\n'));
+      lines.splice(tableStart, tableLines.length, formatted);
+      const newValue = lines.join('\n');
+      onChange(newValue);
+      recordHistory(newValue);
+      toast.success('Đã căn lề các cột bảng thẳng tắp!');
+    }
   };
 
-  // Handle Image Upload & Insertion
+  // Add row to current table
+  const handleAddTableRow = () => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+
+    const start = textarea.selectionStart;
+    const lines = value.split('\n');
+
+    let currentLineIdx = 0;
+    let charCount = 0;
+    for (let i = 0; i < lines.length; i++) {
+      charCount += lines[i].length + 1;
+      if (start < charCount) {
+        currentLineIdx = i;
+        break;
+      }
+    }
+
+    if (!lines[currentLineIdx]?.includes('|')) {
+      toast('Hãy đặt con trỏ vào bảng cần thêm dòng', { icon: 'ℹ️' });
+      return;
+    }
+
+    // Count columns in current row
+    const cells = lines[currentLineIdx].split('|').filter((_, idx, arr) => idx > 0 && idx < arr.length - 1);
+    const colCount = Math.max(1, cells.length);
+    const newRow = '| ' + new Array(colCount).fill('Dữ liệu mới').join(' | ') + ' |';
+
+    lines.splice(currentLineIdx + 1, 0, newRow);
+    const newValue = lines.join('\n');
+    onChange(newValue);
+    recordHistory(newValue);
+    toast.success('Đã thêm 1 dòng mới vào bảng!');
+  };
+
+  // Image Upload & Insertion
   const uploadAndInsertImage = async (file: File) => {
     if (!file.type.startsWith('image/')) {
       toast.error('Vui lòng chọn file hình ảnh hợp lệ (PNG, JPG, SVG, WebP, GIF)');
@@ -534,7 +486,7 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
           formData.append('image', file);
           const res = await filesApi.uploadImage(formData);
           imageUrl = res.data.url;
-          toast.success('Tải ảnh thành công và đã chèn vào tài liệu!', { id: toastId });
+          toast.success('Tải ảnh thành công!', { id: toastId });
         } catch (err: any) {
           toast.error(err.response?.data?.error || 'Tải ảnh thất bại', { id: toastId });
           throw err;
@@ -542,15 +494,8 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
       }
 
       const cleanName = file.name.replace(/\.[^/.]+$/, '');
-
-      if (viewMode === 'visual') {
-        const resolvedUrl = resolveApiUrl(imageUrl);
-        const imgHtml = `<p><img src="${resolvedUrl}" data-doc-src="${imageUrl}" alt="${cleanName}" class="max-w-full rounded-xl my-3 border border-border shadow-xs inline-block cursor-pointer hover:ring-2 hover:ring-primary/40 transition-all" /></p><p><br></p>`;
-        execVisualCommand('insertHTML', imgHtml);
-      } else {
-        const markdownTag = `![${cleanName}](${imageUrl})`;
-        insertBlock(markdownTag);
-      }
+      const markdownTag = `![${cleanName}](${imageUrl})`;
+      insertBlock(markdownTag);
     } catch (err) {
       console.error(err);
     } finally {
@@ -568,7 +513,7 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
     }
   };
 
-  // Drag and Drop Images directly into editor
+  // Drag and drop image
   const handleDrop = (e: React.DragEvent) => {
     const files = e.dataTransfer.files;
     if (files && files.length > 0) {
@@ -597,63 +542,275 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
     }
   };
 
-  // Keyboard Shortcuts (Ctrl+S, Ctrl+B, Ctrl+I)
-  const handleKeyDown = (e: React.KeyboardEvent) => {
+  // Keyboard Shortcuts & Smart Typing
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+
+    // Save: Ctrl + S
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
       e.preventDefault();
       if (onSave) onSave();
       return;
     }
-    if (viewMode !== 'visual') {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
+
+    // Undo: Ctrl + Z
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') {
+      e.preventDefault();
+      handleUndo();
+      return;
+    }
+
+    // Redo: Ctrl + Y or Ctrl + Shift + Z
+    if (
+      ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') ||
+      ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'z')
+    ) {
+      e.preventDefault();
+      handleRedo();
+      return;
+    }
+
+    // Bold: Ctrl + B
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
+      e.preventDefault();
+      insertText('**', '**', 'văn bản in đậm');
+      return;
+    }
+
+    // Italic: Ctrl + I
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'i') {
+      e.preventDefault();
+      insertText('*', '*', 'văn bản in nghiêng');
+      return;
+    }
+
+    // Link: Ctrl + K
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      const url = prompt('Nhập đường dẫn liên kết (URL):', 'https://');
+      if (url) {
+        insertText('[', `](${url})`, 'tiêu đề liên kết');
+      }
+      return;
+    }
+
+    // Strikethrough: Ctrl + Shift + X
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'x') {
+      e.preventDefault();
+      insertText('~~', '~~', 'gạch ngang');
+      return;
+    }
+
+    // Tab key: Indent / Outdent
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+
+      if (e.shiftKey) {
+        // Shift + Tab: Remove 2 leading spaces on current line
+        const before = value.substring(0, start);
+        const lineStart = before.lastIndexOf('\n') + 1;
+        const currentLine = value.substring(lineStart);
+        if (currentLine.startsWith('  ')) {
+          const newValue = value.substring(0, lineStart) + currentLine.substring(2);
+          onChange(newValue);
+          recordHistory(newValue, Math.max(lineStart, start - 2), Math.max(lineStart, end - 2));
+          setTimeout(() => {
+            textarea.setSelectionRange(Math.max(lineStart, start - 2), Math.max(lineStart, end - 2));
+          }, 0);
+        }
+      } else {
+        // Tab: Insert 2 spaces
+        const replacement = '  ';
+        const newValue = value.substring(0, start) + replacement + value.substring(end);
+        onChange(newValue);
+        recordHistory(newValue, start + 2, start + 2);
+        setTimeout(() => {
+          textarea.setSelectionRange(start + 2, start + 2);
+        }, 0);
+      }
+      return;
+    }
+
+    // Smart Enter in Lists (- item, 1. item, - [ ] item)
+    if (e.key === 'Enter' && !e.shiftKey) {
+      const start = textarea.selectionStart;
+      const beforeCursor = value.substring(0, start);
+      const lastNewline = beforeCursor.lastIndexOf('\n');
+      const currentLine = beforeCursor.substring(lastNewline + 1);
+
+      // Check task list: "- [ ] " or "- [x] "
+      const taskMatch = currentLine.match(/^(\s*)-\s\[([ xX])\]\s(.*)$/);
+      if (taskMatch) {
         e.preventDefault();
-        insertText('**', '**', 'văn bản in đậm');
+        const indent = taskMatch[1];
+        const content = taskMatch[3];
+        if (!content.trim()) {
+          // If empty task item, pressing enter exits list
+          const lineStart = lastNewline + 1;
+          const newValue = value.substring(0, lineStart) + value.substring(start);
+          onChange(newValue);
+          recordHistory(newValue, lineStart, lineStart);
+          setTimeout(() => textarea.setSelectionRange(lineStart, lineStart), 0);
+        } else {
+          // Continue task list
+          const nextItem = `\n${indent}- [ ] `;
+          const newValue = value.substring(0, start) + nextItem + value.substring(start);
+          onChange(newValue);
+          recordHistory(newValue, start + nextItem.length, start + nextItem.length);
+          setTimeout(() => textarea.setSelectionRange(start + nextItem.length, start + nextItem.length), 0);
+        }
         return;
       }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'i') {
+
+      // Check bullet list: "- " or "* "
+      const bulletMatch = currentLine.match(/^(\s*)([-*])\s(.*)$/);
+      if (bulletMatch) {
         e.preventDefault();
-        insertText('*', '*', 'văn bản in nghiêng');
+        const indent = bulletMatch[1];
+        const marker = bulletMatch[2];
+        const content = bulletMatch[3];
+        if (!content.trim()) {
+          // Exit list
+          const lineStart = lastNewline + 1;
+          const newValue = value.substring(0, lineStart) + value.substring(start);
+          onChange(newValue);
+          recordHistory(newValue, lineStart, lineStart);
+          setTimeout(() => textarea.setSelectionRange(lineStart, lineStart), 0);
+        } else {
+          // Continue list
+          const nextItem = `\n${indent}${marker} `;
+          const newValue = value.substring(0, start) + nextItem + value.substring(start);
+          onChange(newValue);
+          recordHistory(newValue, start + nextItem.length, start + nextItem.length);
+          setTimeout(() => textarea.setSelectionRange(start + nextItem.length, start + nextItem.length), 0);
+        }
         return;
       }
-      if (e.key === 'Tab') {
+
+      // Check ordered list: "1. "
+      const numberMatch = currentLine.match(/^(\s*)(\d+)\.\s(.*)$/);
+      if (numberMatch) {
         e.preventDefault();
-        insertText('  ', '');
+        const indent = numberMatch[1];
+        const num = parseInt(numberMatch[2], 10);
+        const content = numberMatch[3];
+        if (!content.trim()) {
+          // Exit list
+          const lineStart = lastNewline + 1;
+          const newValue = value.substring(0, lineStart) + value.substring(start);
+          onChange(newValue);
+          recordHistory(newValue, lineStart, lineStart);
+          setTimeout(() => textarea.setSelectionRange(lineStart, lineStart), 0);
+        } else {
+          // Continue numbered list
+          const nextItem = `\n${indent}${num + 1}. `;
+          const newValue = value.substring(0, start) + nextItem + value.substring(start);
+          onChange(newValue);
+          recordHistory(newValue, start + nextItem.length, start + nextItem.length);
+          setTimeout(() => textarea.setSelectionRange(start + nextItem.length, start + nextItem.length), 0);
+        }
+        return;
+      }
+    }
+
+    // Auto-wrap selected text with brackets/quotes
+    const pairs: Record<string, string> = {
+      '(': ')',
+      '[': ']',
+      '{': '}',
+      '`': '`',
+      '"': '"',
+      "'": "'"
+    };
+
+    if (pairs[e.key]) {
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      if (start !== end) {
+        e.preventDefault();
+        const selected = value.substring(start, end);
+        const replacement = `${e.key}${selected}${pairs[e.key]}`;
+        const newValue = value.substring(0, start) + replacement + value.substring(end);
+        onChange(newValue);
+        recordHistory(newValue, start + 1, end + 1);
+        setTimeout(() => {
+          textarea.setSelectionRange(start + 1, end + 1);
+        }, 0);
+        return;
       }
     }
   };
 
-  // Pre-built Handover Templates
+  // Snippet templates
   const templates = [
     {
-      label: 'Bảng Features & AC mẫu',
-      content: `### 2. TÍNH NĂNG & TIÊU CHÍ NGHIỆM THU (FEATURES & AC)
+      label: 'Bảng Features & AC chuẩn',
+      content: `## 2. TÍNH NĂNG & TIÊU CHÍ NGHIỆM THU (FEATURES & AC)
 | Mã | Tính năng | Mô tả chi tiết | Tiêu chí nghiệm thu (AC) | Trạng thái |
 |---|---|---|---|---|
-| FEAT-01 | Khởi tạo trang | Tải dữ liệu ban đầu từ API | Hiển thị spinner và danh sách đầy đủ | Hoàn tất |
-| FEAT-02 | Tìm kiếm & Lọc | Lọc theo từ khóa tức thì | Phản hồi dưới 300ms, không lag | Đang làm |
-| FEAT-03 | Xác thực dữ liệu | Kiểm tra các trường bắt buộc | Hiển thị thông báo lỗi cụ thể | Chờ test |`
+| FEAT-01 | Khởi tạo trang | Tải dữ liệu ban đầu cho màn hình | Hiển thị đầy đủ thông tin sau 1s | Hoàn tất |
+| FEAT-02 | Tìm kiếm & Lọc | Lọc theo từ khóa tức thì | Phản hồi dưới 300ms, không giật lag | Đang làm |
+| FEAT-03 | Xác thực biểu mẫu | Kiểm tra dữ liệu nhập bắt buộc | Báo lỗi chi tiết màu đỏ cạnh ô nhập | Chờ test |`
     },
     {
-      label: 'Bảng API Endpoints mẫu',
-      content: `### 4. DANH SÁCH API ENDPOINTS
-| Method | Endpoint | Mô tả nghiệp vụ | Request Body / Query Params | Response mẫu |
+      label: 'Danh sách RESTful API Endpoints',
+      content: `## 4. DANH SÁCH API ENDPOINTS
+| Method | Endpoint | Mô tả nghiệp vụ | Query / Request Body | Response chuẩn |
 |---|---|---|---|---|
-| GET | \`/api/docs/screens\` | Lấy danh sách màn hình | \`?moduleId=1&q=search\` | 200 OK: \`Screen[]\` |
-| POST | \`/api/docs/screens\` | Tạo màn hình mới | \`{ moduleId, title, raw_content }\` | 201 Created: \`Screen\` |
-| PUT | \`/api/docs/screens/:id\` | Cập nhật màn hình | \`{ raw_content, status }\` | 200 OK: \`Screen\` |
-| DELETE | \`/api/docs/screens/:id\` | Xóa màn hình | None | 200 OK: \`{ message }\` |`
+| GET | \`/api/docs/screens\` | Lấy danh sách tài liệu | \`?moduleId=1&q=search\` | 200 OK: \`Screen[]\` |
+| POST | \`/api/docs/screens\` | Tạo mới tài liệu đặc tả | \`{ moduleId, title, raw_content }\` | 201 Created: \`Screen\` |
+| PUT | \`/api/docs/screens/:id\` | Cập nhật tài liệu | \`{ raw_content, status }\` | 200 OK: \`Screen\` |
+| DELETE | \`/api/docs/screens/:id\` | Xóa tài liệu | None | 200 OK: \`{ message }\` |`
     },
     {
-      label: 'Quy tắc nghiệp vụ (Business Rules)',
-      content: `### 3. QUY TẮC NGHIỆP VỤ (BUSINESS RULES)
-- **BR-01 (Quyền hạn)**: Chỉ người dùng có quyền Quản trị hoặc Tác giả mới có thể chỉnh sửa/xóa màn hình này.
-- **BR-02 (Ràng buộc dữ liệu)**: Dữ liệu bắt buộc phải được kiểm tra trước khi gửi lên API.
-- **BR-03 (Lưu trữ tập trung)**: Mọi thay đổi được lưu tự động xuống cơ sở dữ liệu và đồng bộ vào thư mục disk.`
+      label: 'Quy tắc nghiệp vụ (Business Rules - BR)',
+      content: `## 3. QUY TẮC NGHIỆP VỤ (BUSINESS RULES)
+- **BR-01 (Phân quyền)**: Chỉ người dùng có vai trò Quản trị viên (Admin) hoặc Tác giả mới có quyền chỉnh sửa/xóa tài liệu này.
+- **BR-02 (Ràng buộc dữ liệu)**: Mọi trường bắt buộc có dấu (*) phải được kiểm tra hợp lệ trước khi gửi lên máy chủ.
+- **BR-03 (Lưu trữ và Đồng bộ)**: Toàn bộ thay đổi được lưu tức thì vào cơ sở dữ liệu SQLite và đồng bộ vào file Markdown trên ổ đĩa.`
+    },
+    {
+      label: 'Cơ sở dữ liệu & ER Schema',
+      content: `## 5. CƠ SỞ DỮ LIỆU & ER
+\`\`\`sql
+-- Bảng lưu trữ thông tin thực thể
+CREATE TABLE IF NOT EXISTS example_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  status TEXT DEFAULT 'Active',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+\`\`\``
+    },
+    {
+      label: 'Kiểm thử & QA Checklist',
+      content: `## 6. KIỂM THỬ & QA
+- [ ] Kiểm tra hiển thị responsive trên Mobile (375px), Tablet (768px), Desktop (1440px)
+- [ ] Kiểm tra xác thực các trường bắt buộc và thông báo lỗi rõ ràng
+- [ ] Kiểm tra hiệu năng tải trang ban đầu dưới 1.5 giây
+- [ ] Kiểm tra lưu thành công và cập nhật tức thì vào danh sách`
+    },
+    {
+      label: 'Ghi chú kỹ thuật bàn giao (Handover)',
+      content: `## 7. GHI CHÚ BÀN GIAO KỸ THUẬT
+> [!NOTE]
+> Developer tiếp nhận cần kiểm tra cấu hình biến môi trường trước khi chạy ứng dụng.
+> Liên hệ đội BA/Lead Dev nếu có thay đổi về luồng nghiệp vụ trên.`
     }
   ];
 
+  // Character, word and line counters
+  const charCount = value.length;
+  const wordCount = value.trim() ? value.trim().split(/\s+/).length : 0;
+  const lineCount = value.split('\n').length;
+
   return (
-    <div className="border border-border rounded-2xl bg-card overflow-hidden shadow-sm flex flex-col">
+    <div className={`border border-border rounded-2xl bg-card overflow-hidden shadow-sm flex flex-col transition-all duration-200 ${
+      isFullscreen ? 'fixed inset-0 z-50 rounded-none h-screen' : ''
+    }`}>
       {/* Hidden File Input for Image Upload */}
       <input
         type="file"
@@ -663,65 +820,95 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
         className="hidden"
       />
 
-      {/* Editor Main Toolbar */}
-      <div className="border-b border-border bg-muted/40 p-2 sm:p-2.5 flex flex-wrap items-center justify-between gap-2 select-none">
-        {/* Left Toolbar: Rich Formatting Controls */}
-        <div className="flex items-center gap-1 overflow-x-auto sm:overflow-visible scrollbar-thin flex-nowrap max-w-full py-0.5">
+      {/* STICKY MAIN TOOLBAR */}
+      <div className="sticky top-0 z-20 border-b border-border bg-muted/70 backdrop-blur-md p-2 flex flex-wrap items-center justify-between gap-1.5 select-none">
+        {/* Left Toolbar: Text Formatting & Tools */}
+        <div className="flex items-center gap-1 overflow-x-auto scrollbar-thin py-0.5 max-w-full">
+          {/* Undo / Redo */}
+          <button
+            type="button"
+            onClick={handleUndo}
+            className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition"
+            title="Hoàn tác (Undo - Ctrl+Z)"
+          >
+            <Undo2 className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            onClick={handleRedo}
+            className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition"
+            title="Làm lại (Redo - Ctrl+Y)"
+          >
+            <Redo2 className="w-4 h-4" />
+          </button>
+
+          <span className="w-px h-4 bg-border mx-0.5" />
+
           {/* Heading Style Dropdown */}
           <div className="relative">
             <button
               type="button"
               onClick={() => setShowHeadings(!showHeadings)}
-              className="p-1.5 px-2 rounded-lg bg-card border border-border text-xs font-semibold text-foreground hover:bg-accent flex items-center gap-1.5 transition"
-              title="Chọn kiểu tiêu đề (Headings)"
+              className="px-2 py-1.5 rounded-lg bg-card border border-border text-xs font-semibold text-foreground hover:bg-accent flex items-center gap-1.5 transition shadow-2xs"
+              title="Chọn kiểu tiêu đề (H1, H2, H3, H4)"
             >
-              <span>Kiểu chữ</span>
+              <Heading className="w-3.5 h-3.5 text-primary" />
+              <span>Tiêu đề</span>
               <ChevronDown className="w-3 h-3 text-muted-foreground" />
             </button>
 
             {showHeadings && (
               <div 
-                className="absolute left-0 mt-1.5 w-48 bg-card border border-border rounded-xl shadow-xl py-1 z-50 animate-in fade-in zoom-in-95"
+                className="absolute left-0 mt-1.5 w-44 bg-card border border-border rounded-xl shadow-xl py-1 z-50 animate-in fade-in zoom-in-95"
                 onMouseLeave={() => setShowHeadings(false)}
               >
                 <button
                   type="button"
-                  onClick={() => applyHeading('p')}
+                  onClick={() => applyHeading(0)}
                   className="w-full text-left px-3.5 py-1.5 text-xs text-foreground hover:bg-accent"
                 >
                   Văn bản thường (Normal)
                 </button>
                 <button
                   type="button"
-                  onClick={() => applyHeading('h1')}
-                  className="w-full text-left px-3.5 py-1.5 text-base font-extrabold text-foreground hover:bg-accent border-t border-border/50"
+                  onClick={() => applyHeading(1)}
+                  className="w-full text-left px-3.5 py-1.5 text-sm font-extrabold text-foreground hover:bg-accent border-t border-border/50 flex items-center justify-between"
                 >
-                  Tiêu đề 1 (H1)
+                  <span>Tiêu đề H1</span>
+                  <span className="text-[10px] text-muted-foreground font-mono">#</span>
                 </button>
                 <button
                   type="button"
-                  onClick={() => applyHeading('h2')}
-                  className="w-full text-left px-3.5 py-1.5 text-sm font-bold text-foreground hover:bg-accent"
+                  onClick={() => applyHeading(2)}
+                  className="w-full text-left px-3.5 py-1.5 text-xs font-bold text-foreground hover:bg-accent flex items-center justify-between"
                 >
-                  Tiêu đề 2 (H2)
+                  <span>Tiêu đề H2</span>
+                  <span className="text-[10px] text-muted-foreground font-mono">##</span>
                 </button>
                 <button
                   type="button"
-                  onClick={() => applyHeading('h3')}
-                  className="w-full text-left px-3.5 py-1.5 text-xs font-bold text-foreground hover:bg-accent"
+                  onClick={() => applyHeading(3)}
+                  className="w-full text-left px-3.5 py-1.5 text-xs font-semibold text-foreground hover:bg-accent flex items-center justify-between"
                 >
-                  Tiêu đề 3 (H3)
+                  <span>Tiêu đề H3</span>
+                  <span className="text-[10px] text-muted-foreground font-mono">###</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => applyHeading(4)}
+                  className="w-full text-left px-3.5 py-1.5 text-xs font-medium text-foreground hover:bg-accent flex items-center justify-between"
+                >
+                  <span>Tiêu đề H4</span>
+                  <span className="text-[10px] text-muted-foreground font-mono">####</span>
                 </button>
               </div>
             )}
           </div>
 
-          <span className="w-px h-5 bg-border mx-1" />
-
-          {/* Bold, Italic, Strikethrough */}
+          {/* Bold, Italic, Strikethrough, Inline Code */}
           <button
             type="button"
-            onClick={() => insertText('**', '**', 'in đậm')}
+            onClick={() => insertText('**', '**', 'văn bản in đậm')}
             className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition"
             title="In đậm (Bold - Ctrl+B)"
           >
@@ -729,7 +916,7 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
           </button>
           <button
             type="button"
-            onClick={() => insertText('*', '*', 'in nghiêng')}
+            onClick={() => insertText('*', '*', 'văn bản in nghiêng')}
             className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition"
             title="In nghiêng (Italic - Ctrl+I)"
           >
@@ -739,20 +926,25 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
             type="button"
             onClick={() => insertText('~~', '~~', 'gạch ngang')}
             className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition"
-            title="Gạch ngang (Strikethrough)"
+            title="Gạch ngang (Strikethrough - Ctrl+Shift+X)"
           >
             <Strikethrough className="w-4 h-4" />
           </button>
+          <button
+            type="button"
+            onClick={() => insertText('`', '`', 'mã_inline')}
+            className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition"
+            title="Mã inline (Code snippet)"
+          >
+            <Code className="w-4 h-4" />
+          </button>
 
-          <span className="w-px h-5 bg-border mx-1" />
+          <span className="w-px h-4 bg-border mx-0.5" />
 
           {/* Lists */}
           <button
             type="button"
-            onClick={() => {
-              if (viewMode === 'visual') execVisualCommand('insertUnorderedList');
-              else insertBlock('- Mục 1\n- Mục 2');
-            }}
+            onClick={() => insertBlock('- Mục danh sách 1\n- Mục danh sách 2')}
             className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition"
             title="Danh sách dấu chấm (Bullet List)"
           >
@@ -760,129 +952,153 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
           </button>
           <button
             type="button"
-            onClick={() => {
-              if (viewMode === 'visual') execVisualCommand('insertOrderedList');
-              else insertBlock('1. Bước 1\n2. Bước 2');
-            }}
+            onClick={() => insertBlock('1. Bước 1\n2. Bước 2')}
             className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition"
-            title="Danh sách đánh số (Numbered List)"
+            title="Danh sách số thứ tự (Numbered List)"
           >
             <ListOrdered className="w-4 h-4" />
           </button>
           <button
             type="button"
-            onClick={() => insertBlock('- [ ] Công việc cần làm\n- [x] Đã hoàn thành')}
+            onClick={() => insertBlock('- [ ] Công việc cần làm\n- [x] Đã hoàn tất')}
             className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition"
-            title="Checklist công việc (Task list)"
+            title="Checklist công việc / AC (Task List)"
           >
-            <CheckSquare className="w-4 h-4" />
+            <CheckSquare className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
           </button>
 
-          <span className="w-px h-5 bg-border mx-1" />
+          <span className="w-px h-4 bg-border mx-0.5" />
 
-          {/* Table Insertion & Table Controls */}
-          <div className="relative flex items-center">
+          {/* Table Tools Dropdown */}
+          <div className="relative">
             <button
               type="button"
-              onClick={insertVisualTable}
-              className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition flex items-center gap-1"
-              title="Chèn bảng trực quan (Table)"
+              onClick={() => setShowTableModal(!showTableModal)}
+              className="px-2 py-1.5 rounded-lg text-xs font-semibold text-muted-foreground hover:text-foreground hover:bg-accent transition flex items-center gap-1"
+              title="Chèn & Quản lý bảng Markdown (Table)"
             >
               <TableIcon className="w-4 h-4 text-blue-500" />
-              <span className="text-xs font-semibold hidden md:inline">Bảng</span>
+              <span className="hidden md:inline">Bảng</span>
+              <ChevronDown className="w-3 h-3" />
             </button>
 
-            {/* Quick Table Manipulation for Visual Mode */}
-            {viewMode === 'visual' && (
-              <div className="flex items-center gap-0.5 ml-1 bg-background border border-border rounded-lg p-0.5">
+            {showTableModal && (
+              <div 
+                className="absolute left-0 mt-1.5 w-60 bg-card border border-border rounded-xl shadow-xl p-3 z-50 animate-in fade-in zoom-in-95 space-y-2.5"
+                onMouseLeave={() => setShowTableModal(false)}
+              >
+                <div className="text-[11px] font-bold text-foreground border-b border-border/60 pb-1 flex items-center justify-between">
+                  <span>Chèn bảng Markdown</span>
+                  <TableIcon className="w-3.5 h-3.5 text-blue-500" />
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div>
+                    <label className="text-[10px] font-semibold text-muted-foreground block mb-0.5">Số cột</label>
+                    <input 
+                      type="number" 
+                      min="1" 
+                      max="10" 
+                      value={tableCols} 
+                      onChange={(e) => setTableCols(Number(e.target.value))} 
+                      className="w-full bg-background border border-border rounded-lg px-2 py-1 text-xs" 
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold text-muted-foreground block mb-0.5">Số hàng</label>
+                    <input 
+                      type="number" 
+                      min="1" 
+                      max="20" 
+                      value={tableRows} 
+                      onChange={(e) => setTableRows(Number(e.target.value))} 
+                      className="w-full bg-background border border-border rounded-lg px-2 py-1 text-xs" 
+                    />
+                  </div>
+                </div>
                 <button
                   type="button"
-                  onClick={() => modifyTable('addRow')}
-                  className="px-1.5 py-0.5 text-[10px] font-bold rounded hover:bg-accent text-foreground transition"
-                  title="Thêm hàng mới vào bảng"
+                  onClick={handleInsertTable}
+                  className="w-full py-1.5 bg-primary text-primary-foreground text-xs font-bold rounded-lg hover:bg-primary/90 transition shadow-2xs"
                 >
-                  + Dòng
+                  Tạo bảng mới
                 </button>
-                <button
-                  type="button"
-                  onClick={() => modifyTable('deleteRow')}
-                  className="px-1.5 py-0.5 text-[10px] font-bold rounded hover:bg-red-500/10 text-red-500 transition"
-                  title="Xóa dòng hiện tại"
-                >
-                  - Dòng
-                </button>
-                <button
-                  type="button"
-                  onClick={() => modifyTable('addCol')}
-                  className="px-1.5 py-0.5 text-[10px] font-bold rounded hover:bg-accent text-foreground transition"
-                  title="Thêm cột mới vào bảng"
-                >
-                  + Cột
-                </button>
-                <button
-                  type="button"
-                  onClick={() => modifyTable('deleteCol')}
-                  className="px-1.5 py-0.5 text-[10px] font-bold rounded hover:bg-red-500/10 text-red-500 transition"
-                  title="Xóa cột hiện tại"
-                >
-                  - Cột
-                </button>
+                <div className="pt-2 border-t border-border/50 flex flex-col gap-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleAddTableRow();
+                      setShowTableModal(false);
+                    }}
+                    className="w-full text-left px-2 py-1 text-[11px] font-medium text-foreground hover:bg-accent rounded flex items-center gap-1.5"
+                  >
+                    <Plus className="w-3 h-3 text-emerald-500" />
+                    <span>Thêm 1 hàng tại con trỏ</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleBeautifyTable();
+                      setShowTableModal(false);
+                    }}
+                    className="w-full text-left px-2 py-1 text-[11px] font-medium text-foreground hover:bg-accent rounded flex items-center gap-1.5"
+                  >
+                    <AlignLeft className="w-3 h-3 text-blue-500" />
+                    <span>Làm đẹp / Căn thẳng hàng cột</span>
+                  </button>
+                </div>
               </div>
             )}
           </div>
 
-          <span className="w-px h-5 bg-border mx-1" />
-
-          {/* Callout Boxes */}
+          {/* Callout Alerts Dropdown */}
           <div className="relative">
             <button
               type="button"
               onClick={() => setShowCallouts(!showCallouts)}
-              className={`p-1.5 rounded-lg flex items-center gap-1 text-xs font-medium transition ${
-                showCallouts ? 'bg-primary/20 text-primary' : 'text-muted-foreground hover:text-foreground hover:bg-accent'
-              }`}
-              title="Chèn hộp ghi chú / Callout"
+              className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition flex items-center gap-1 text-xs"
+              title="Chèn hộp ghi chú / Callout GitHub chuẩn"
             >
-              <Quote className="w-4 h-4" />
-              <span className="hidden sm:inline text-[11px]">Ghi chú</span>
+              <Quote className="w-4 h-4 text-amber-500" />
+              <span className="hidden lg:inline text-[11px] font-medium">Ghi chú</span>
+              <ChevronDown className="w-3 h-3" />
             </button>
 
             {showCallouts && (
               <div 
-                className="absolute left-0 mt-2 w-52 bg-card border border-border rounded-xl shadow-xl py-1.5 z-50 animate-in fade-in zoom-in-95"
+                className="absolute left-0 mt-1.5 w-52 bg-card border border-border rounded-xl shadow-xl py-1.5 z-50 animate-in fade-in zoom-in-95"
                 onMouseLeave={() => setShowCallouts(false)}
               >
                 <button
                   type="button"
                   onClick={() => {
-                    insertBlock('> [!NOTE]\n> Ghi chú thông tin cần nhớ.');
+                    insertBlock('> [!NOTE]\n> Ghi chú thông tin nghiệp vụ cần nhớ.');
                     setShowCallouts(false);
                   }}
-                  className="w-full text-left px-3 py-2 text-xs flex items-center gap-2 hover:bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                  className="w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-blue-500/10 text-blue-600 dark:text-blue-400 font-semibold"
                 >
-                  <Info className="w-4 h-4" />
+                  <Info className="w-3.5 h-3.5" />
                   <span>[!NOTE] Ghi chú</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => {
-                    insertBlock('> [!TIP]\n> Mẹo hay hoặc gợi ý thực thi.');
+                    insertBlock('> [!TIP]\n> Mẹo hay hoặc đề xuất tối ưu.');
                     setShowCallouts(false);
                   }}
-                  className="w-full text-left px-3 py-2 text-xs flex items-center gap-2 hover:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                  className="w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-semibold"
                 >
-                  <Sparkles className="w-4 h-4" />
+                  <Sparkles className="w-3.5 h-3.5" />
                   <span>[!TIP] Mẹo hay</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => {
-                    insertBlock('> [!WARNING]\n> Cảnh báo nghiệp vụ hoặc nguy cơ lỗi.');
+                    insertBlock('> [!WARNING]\n> Cảnh báo rủi ro hoặc nghiệp vụ quan trọng.');
                     setShowCallouts(false);
                   }}
-                  className="w-full text-left px-3 py-2 text-xs flex items-center gap-2 hover:bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                  className="w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-amber-500/10 text-amber-600 dark:text-amber-400 font-semibold"
                 >
-                  <AlertTriangle className="w-4 h-4" />
+                  <AlertTriangle className="w-3.5 h-3.5" />
                   <span>[!WARNING] Cảnh báo</span>
                 </button>
                 <button
@@ -891,29 +1107,68 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
                     insertBlock('> [!IMPORTANT]\n> Quy tắc nghiệp vụ bắt buộc tuân thủ.');
                     setShowCallouts(false);
                   }}
-                  className="w-full text-left px-3 py-2 text-xs flex items-center gap-2 hover:bg-red-500/10 text-red-600 dark:text-red-400"
+                  className="w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-red-500/10 text-red-600 dark:text-red-400 font-semibold"
                 >
-                  <ShieldAlert className="w-4 h-4" />
-                  <span>[!IMPORTANT] Quan trọng</span>
+                  <ShieldAlert className="w-3.5 h-3.5" />
+                  <span>[!IMPORTANT] Bắt buộc</span>
                 </button>
               </div>
             )}
           </div>
 
-          {/* Image Upload Button */}
+          {/* Code Block Dropdown */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowCodeBlocks(!showCodeBlocks)}
+              className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition flex items-center gap-1 text-xs"
+              title="Chèn khối mã (Code Block) có Highlight cú pháp"
+            >
+              <Terminal className="w-4 h-4 text-purple-500" />
+              <span className="hidden lg:inline text-[11px] font-medium">Khối Code</span>
+              <ChevronDown className="w-3 h-3" />
+            </button>
+
+            {showCodeBlocks && (
+              <div 
+                className="absolute left-0 mt-1.5 w-48 bg-card border border-border rounded-xl shadow-xl py-1 z-50 animate-in fade-in zoom-in-95"
+                onMouseLeave={() => setShowCodeBlocks(false)}
+              >
+                {[
+                  { label: 'SQL (Query & DDL)', val: 'sql' },
+                  { label: 'TypeScript / JS', val: 'typescript' },
+                  { label: 'JSON Data', val: 'json' },
+                  { label: 'Bash / Shell', val: 'bash' },
+                  { label: 'C# / .NET', val: 'csharp' },
+                  { label: 'Sơ đồ Mermaid', val: 'mermaid' },
+                ].map((item) => (
+                  <button
+                    key={item.val}
+                    type="button"
+                    onClick={() => applyCodeBlock(item.val)}
+                    className="w-full text-left px-3 py-1.5 text-xs text-foreground hover:bg-accent font-mono flex items-center justify-between"
+                  >
+                    <span>{item.label}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Upload Image Button */}
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
             disabled={isUploading}
-            className="p-1.5 rounded-lg text-muted-foreground hover:text-primary hover:bg-primary/10 transition flex items-center gap-1 disabled:opacity-50"
-            title="Tải ảnh lên hoặc dán ảnh (Ctrl+V)"
+            className="p-1.5 rounded-lg text-muted-foreground hover:text-primary hover:bg-primary/10 transition flex items-center gap-1 text-xs font-semibold disabled:opacity-50"
+            title="Chèn ảnh vào vị trí con trỏ (hoặc kéo thả/dán ảnh Ctrl+V)"
           >
             {isUploading ? (
               <Loader2 className="w-4 h-4 animate-spin text-primary" />
             ) : (
-              <ImageIcon className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+              <ImageIcon className="w-4 h-4 text-emerald-500" />
             )}
-            <span className="text-[11px] font-bold hidden sm:inline text-foreground">Chèn ảnh</span>
+            <span className="hidden sm:inline text-[11px] text-foreground font-bold">Chèn ảnh</span>
           </button>
 
           {/* Link */}
@@ -922,38 +1177,31 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
             onClick={() => {
               const url = prompt('Nhập đường dẫn liên kết (URL):', 'https://');
               if (url) {
-                if (viewMode === 'visual') {
-                  execVisualCommand('createLink', url);
-                } else {
-                  insertText('[', `](${url})`, 'văn bản liên kết');
-                }
+                insertText('[', `](${url})`, 'liên kết');
               }
             }}
             className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition"
-            title="Chèn liên kết (Link)"
+            title="Chèn liên kết (Ctrl+K)"
           >
             <LinkIcon className="w-4 h-4" />
           </button>
 
-          {/* Template Dropdown */}
+          {/* Snippets / Handover Templates */}
           <div className="relative">
             <button
               type="button"
               onClick={() => setShowTemplates(!showTemplates)}
-              className={`p-1.5 rounded-lg flex items-center gap-1 text-xs font-semibold transition border ${
-                showTemplates
-                  ? 'bg-primary text-primary-foreground border-primary'
-                  : 'bg-card text-foreground border-border hover:bg-accent'
-              }`}
-              title="Chèn các mẫu đặc tả có sẵn"
+              className="px-2 py-1.5 rounded-lg bg-card border border-border text-xs font-semibold text-foreground hover:bg-accent flex items-center gap-1.5 transition shadow-2xs"
+              title="Chèn mẫu đặc tả & AC có sẵn"
             >
               <Sparkles className="w-3.5 h-3.5 text-amber-500" />
               <span className="hidden sm:inline">Mẫu Snippet</span>
+              <ChevronDown className="w-3 h-3 text-muted-foreground" />
             </button>
 
             {showTemplates && (
               <div 
-                className="absolute right-0 left-auto sm:left-0 sm:right-auto max-w-[calc(100vw-2rem)] mt-2 w-64 bg-card border border-border rounded-xl shadow-xl py-1.5 z-50 animate-in fade-in zoom-in-95"
+                className="absolute right-0 left-auto sm:left-0 sm:right-auto max-w-[calc(100vw-2rem)] mt-1.5 w-64 bg-card border border-border rounded-xl shadow-xl py-1.5 z-50 animate-in fade-in zoom-in-95"
                 onMouseLeave={() => setShowTemplates(false)}
               >
                 <div className="px-3 py-1 text-[10px] uppercase font-bold text-muted-foreground tracking-wider border-b border-border/60">
@@ -968,7 +1216,7 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
                       setShowTemplates(false);
                       toast.success(`Đã chèn "${tpl.label}"`);
                     }}
-                    className="w-full text-left px-3.5 py-2 text-xs hover:bg-accent hover:text-primary transition flex items-center justify-between"
+                    className="w-full text-left px-3.5 py-1.5 text-xs hover:bg-accent hover:text-primary transition flex items-center justify-between"
                   >
                     <span>{tpl.label}</span>
                   </button>
@@ -978,300 +1226,192 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
           </div>
         </div>
 
-        {/* Right Toolbar: View Mode Switcher (WYSIWYG vs Raw Markdown vs Split) */}
-        <div className="flex items-center gap-2 shrink-0">
+        {/* Right Toolbar: View Mode Switcher, Fullscreen & Save */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          {/* Mode Switcher */}
           <div className="bg-background border border-border rounded-xl p-0.5 flex items-center text-xs">
-            {/* Visual (WYSIWYG) Mode */}
+            {/* Split Mode (Recommended default) */}
             <button
               type="button"
-              onClick={() => handleSwitchMode('visual')}
-              className={`px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5 transition ${
-                viewMode === 'visual'
-                  ? 'bg-primary text-primary-foreground shadow-xs'
-                  : 'text-muted-foreground hover:text-foreground'
-              }`}
-              title="Chế độ Soạn thảo trực quan dễ dùng (như Word/Notion) - Khuyên dùng cho người dùng không rành code"
-            >
-              <Edit3 className="w-3.5 h-3.5" />
-              <span>Trực quan (WYSIWYG)</span>
-            </button>
-
-            {/* Split Mode */}
-            <button
-              type="button"
-              onClick={() => handleSwitchMode('split')}
-              className={`hidden md:flex px-2.5 py-1.5 rounded-lg font-semibold items-center gap-1 transition ${
+              onClick={() => setViewMode('split')}
+              className={`px-2.5 py-1.5 rounded-lg font-bold flex items-center gap-1 transition ${
                 viewMode === 'split'
-                  ? 'bg-primary text-primary-foreground shadow-xs'
+                  ? 'bg-primary text-primary-foreground shadow-2xs'
                   : 'text-muted-foreground hover:text-foreground'
               }`}
-              title="Chia đôi màn hình: Mã Markdown bên trái & Xem trước bên phải"
+              title="Chế độ Song song: Viết bên trái & Xem trước trực quan bên phải"
             >
               <Columns className="w-3.5 h-3.5" />
-              <span>Song song</span>
+              <span className="hidden sm:inline">Song song</span>
             </button>
 
-            {/* Raw Markdown Mode */}
+            {/* Edit Only */}
             <button
               type="button"
-              onClick={() => handleSwitchMode('edit')}
+              onClick={() => setViewMode('edit')}
               className={`px-2.5 py-1.5 rounded-lg font-semibold flex items-center gap-1 transition ${
                 viewMode === 'edit'
-                  ? 'bg-primary text-primary-foreground shadow-xs'
+                  ? 'bg-primary text-primary-foreground shadow-2xs'
                   : 'text-muted-foreground hover:text-foreground'
               }`}
-              title="Chế độ Mã nguồn Markdown (.md thuần túy)"
+              title="Chế độ Toàn màn hình soạn thảo Markdown"
             >
-              <FileText className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Mã .md</span>
+              <Edit3 className="w-3.5 h-3.5" />
+              <span>Soạn thảo</span>
             </button>
 
-            {/* Preview Mode */}
+            {/* Preview Only */}
             <button
               type="button"
-              onClick={() => handleSwitchMode('preview')}
+              onClick={() => setViewMode('preview')}
               className={`px-2.5 py-1.5 rounded-lg font-semibold flex items-center gap-1 transition ${
                 viewMode === 'preview'
-                  ? 'bg-primary text-primary-foreground shadow-xs'
+                  ? 'bg-primary text-primary-foreground shadow-2xs'
                   : 'text-muted-foreground hover:text-foreground'
               }`}
-              title="Chỉ xem kết quả tài liệu"
+              title="Chế độ Xem trước kết quả tài liệu"
             >
               <Eye className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Xem trước</span>
+              <span>Xem trước</span>
             </button>
           </div>
 
-          {/* Quick Save Button if onSave provided */}
+          {/* Fullscreen / Zen Mode Toggle */}
+          <button
+            type="button"
+            onClick={() => setIsFullscreen(!isFullscreen)}
+            className="p-2 rounded-xl border border-border bg-card hover:bg-accent text-muted-foreground hover:text-foreground transition shadow-2xs"
+            title={isFullscreen ? 'Thu nhỏ cửa sổ' : 'Phóng to toàn màn hình'}
+          >
+            {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+          </button>
+
+          {/* Save Button */}
           {onSave && (
             <button
               type="button"
-              onClick={() => {
-                if (viewMode === 'visual' && visualRef.current) {
-                  const html = visualRef.current.innerHTML;
-                  const newMd = htmlToMarkdown(html);
-                  onChange(newMd);
-                }
-                onSave();
-              }}
+              onClick={onSave}
               disabled={isSaving}
-              className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition shadow-sm flex items-center gap-1.5 disabled:opacity-50"
+              className="px-3.5 py-1.5 bg-primary text-primary-foreground rounded-xl text-xs font-bold transition shadow-2xs flex items-center gap-1.5 disabled:opacity-50 hover:bg-primary/90"
               title="Lưu tài liệu (Ctrl+S)"
             >
-              {isSaving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-              <span>{isSaving ? 'Đang lưu...' : 'Lưu'}</span>
+              {isSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+              <span>{isSaving ? 'Lưu...' : 'Lưu'}</span>
             </button>
           )}
         </div>
       </div>
 
-      {/* Editor Content Area */}
+      {/* MAIN EDITOR CONTENT BODY */}
       <div 
         className="flex-1 flex flex-col relative overflow-hidden"
-        style={{ minHeight }}
+        style={{ minHeight: isFullscreen ? 'calc(100vh - 85px)' : minHeight }}
       >
-        {/* 1. VISUAL WYSIWYG EDITOR PANE (Default mode for no-tech users) */}
-        {viewMode === 'visual' && (
-          <div 
-            ref={visualContainerRef}
-            onScroll={() => {
-              if (hoveredImage) updateImageRect(hoveredImage);
-            }}
-            className="flex-1 flex flex-col bg-background relative overflow-y-auto"
-          >
-            <div
-              ref={visualRef}
-              contentEditable
-              onInput={handleVisualInput}
-              onBlur={handleVisualInput}
-              onDrop={handleDrop}
-              onPaste={handlePaste}
-              onKeyDown={handleKeyDown}
-              onMouseMove={handleVisualMouseMove}
-              onMouseLeave={handleVisualMouseLeave}
-              onClick={handleVisualClick}
-              className="w-full flex-1 p-5 sm:p-7 outline-none overflow-y-auto leading-relaxed text-foreground font-sans prose prose-slate dark:prose-invert max-w-none scrollbar-thin select-text min-h-[480px]"
-              style={{ minHeight }}
-            />
-
-            {/* Floating Overlay for Hovered/Resizing Image */}
-            {hoveredImageRect && hoveredImage && (
-              <div 
-                className="absolute pointer-events-none z-30 transition-all duration-75"
-                style={{
-                  top: hoveredImageRect.top,
-                  left: hoveredImageRect.left,
-                  width: hoveredImageRect.width,
-                  height: hoveredImageRect.height,
+        <div className="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-border flex-1 h-full">
+          {/* EDITOR TEXTAREA PANE */}
+          {(viewMode === 'edit' || viewMode === 'split') && (
+            <div className={`relative flex flex-col h-full bg-background ${viewMode === 'edit' ? 'col-span-full' : ''}`}>
+              <textarea
+                ref={textareaRef}
+                value={value}
+                onChange={(e) => {
+                  onChange(e.target.value);
+                  recordHistory(e.target.value);
+                  updateCursorPosition();
                 }}
-                onMouseEnter={() => {
-                  if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
-                }}
-                onMouseLeave={handleVisualMouseLeave}
-              >
-                {/* Border outline on image */}
-                <div className="absolute inset-0 border-2 border-primary/70 rounded-xl pointer-events-none ring-2 ring-primary/20" />
-
-                {/* Top Action & Resize Toolbar */}
-                <div 
-                  className="absolute left-0 -top-11 flex items-center gap-1 bg-neutral-900/95 text-white border border-neutral-700/90 rounded-xl shadow-xl px-2 py-1 pointer-events-auto backdrop-blur-md animate-in fade-in zoom-in-95 select-none"
-                  onMouseEnter={() => {
-                    if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
-                  }}
-                >
-                  <span className="text-[10px] text-neutral-400 font-bold uppercase tracking-wider px-1">
-                    Resize:
-                  </span>
-                  {[
-                    { label: '25%', val: 25 },
-                    { label: '50%', val: 50 },
-                    { label: '75%', val: 75 },
-                    { label: '100%', val: 100 },
-                  ].map((preset) => (
-                    <button
-                      key={preset.val}
-                      type="button"
-                      onClick={() => handleApplyPresetWidth(preset.val)}
-                      className="px-1.5 py-0.5 rounded text-[11px] font-semibold bg-neutral-800 hover:bg-primary hover:text-white transition"
-                      title={`Đặt kích thước ${preset.label}`}
-                    >
-                      {preset.label}
-                    </button>
-                  ))}
-                  <button
-                    type="button"
-                    onClick={() => handleApplyPresetWidth('800px')}
-                    className="px-1.5 py-0.5 rounded text-[11px] font-semibold bg-neutral-800 hover:bg-primary hover:text-white transition"
-                    title="Đặt chiều rộng chuẩn 800px"
-                  >
-                    800px
-                  </button>
-
-                  <span className="w-px h-4 bg-neutral-700 mx-1" />
-
-                  {/* Sliders / Configuration button */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const initialW = parseInt(hoveredImage.getAttribute('width') || hoveredImage.style.width || '') || hoveredImage.naturalWidth || Math.round(hoveredImage.offsetWidth);
-                      const initialH = hoveredImage.naturalHeight || Math.round(hoveredImage.offsetHeight);
-                      setEditorModalImage({
-                        url: hoveredImage.getAttribute('data-doc-src') || hoveredImage.src,
-                        alt: hoveredImage.alt || 'Hình ảnh',
-                        initialWidth: initialW,
-                        initialHeight: initialH,
-                        targetElement: hoveredImage,
-                      });
-                    }}
-                    className="p-1 rounded hover:bg-neutral-800 text-neutral-300 hover:text-white transition flex items-center gap-1 text-[11px]"
-                    title="Cấu hình chi tiết (Xoay, lật, nén chất lượng, kích thước px)"
-                  >
-                    <Sliders className="w-3.5 h-3.5 text-blue-400" />
-                    <span className="hidden sm:inline">Cấu hình</span>
-                  </button>
-
-                  {/* Delete image button */}
-                  <button
-                    type="button"
-                    onClick={handleDeleteHoveredImage}
-                    className="p-1 rounded hover:bg-red-500/20 text-neutral-300 hover:text-red-400 transition"
-                    title="Xóa ảnh này khỏi tài liệu và máy chủ"
-                  >
-                    <Trash2 className="w-3.5 h-3.5 text-red-400" />
-                  </button>
-                </div>
-
-                {/* Bottom-right Drag handle to resize interactively */}
-                <div
-                  onMouseDown={handleStartDragResize}
-                  className="absolute -right-2 -bottom-2 w-5 h-5 bg-primary border-2 border-white rounded-full shadow-lg cursor-se-resize flex items-center justify-center hover:scale-125 transition-transform pointer-events-auto select-none"
-                  title="Nhấn và kéo chuột để thay đổi kích thước ảnh trực tiếp"
-                >
-                  <div className="w-1.5 h-1.5 bg-white rounded-full" />
-                </div>
-
-                {/* Current width badge while dragging */}
-                {dragCurrentWidth && (
-                  <div className="absolute right-0 -bottom-8 bg-black/80 backdrop-blur-md text-white text-[10px] font-mono font-bold px-2 py-0.5 rounded-md pointer-events-none shadow">
-                    {dragCurrentWidth}px
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Bottom Status bar for Visual mode */}
-            <div className="py-1 px-4 border-t border-border/50 bg-muted/20 text-[11px] text-muted-foreground flex items-center justify-between">
-              <span className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
-                <span>Chế độ Soạn thảo Trực quan (WYSIWYG) • Rê chuột vào ảnh để chỉnh kích thước nhanh hoặc bấm vào ảnh để cấu hình chi tiết</span>
-              </span>
-              <span className="font-mono shrink-0 ml-2">
-                {value.length} ký tự
-              </span>
+                onKeyDown={handleKeyDown}
+                onClick={updateCursorPosition}
+                onKeyUp={updateCursorPosition}
+                onDrop={handleDrop}
+                onPaste={handlePaste}
+                onScroll={handleEditorScroll}
+                placeholder={placeholder}
+                className="w-full flex-1 p-4 sm:p-6 bg-background text-foreground font-mono text-xs sm:text-sm resize-none focus:outline-none scrollbar-thin leading-relaxed"
+                style={{ minHeight: isFullscreen ? 'calc(100vh - 120px)' : minHeight }}
+                spellCheck={false}
+              />
             </div>
-          </div>
-        )}
+          )}
 
-        {/* 2. SPLIT / CODE / PREVIEW PANES */}
-        {viewMode !== 'visual' && (
-          <div className="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-border flex-1">
-            {/* Editor Textarea Pane */}
-            {(viewMode === 'edit' || viewMode === 'split') && (
-              <div className={`relative flex flex-col ${viewMode === 'edit' ? 'col-span-full' : ''}`}>
-                <textarea
-                  ref={textareaRef}
-                  value={value}
-                  onChange={(e) => onChange(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  onDrop={handleDrop}
-                  onPaste={handlePaste}
-                  placeholder={placeholder}
-                  className="w-full flex-1 p-4 sm:p-5 bg-background text-foreground font-mono text-xs sm:text-sm resize-none focus:outline-none scrollbar-thin leading-relaxed"
-                  style={{ minHeight }}
-                />
-
-                <div className="py-1 px-4 border-t border-border/50 bg-muted/20 text-[11px] text-muted-foreground flex items-center justify-between">
-                  <span>Kéo thả ảnh hoặc dán ảnh (Ctrl+V) • Lưu nhanh bằng <kbd className="font-mono bg-accent px-1 rounded">Ctrl+S</kbd></span>
-                  <span className="font-mono shrink-0 ml-2">{value.length} ký tự</span>
-                </div>
-              </div>
-            )}
-
-            {/* Live Preview Pane */}
-            {(viewMode === 'preview' || viewMode === 'split') && (
-              <div className={`p-4 sm:p-6 bg-card min-w-0 overflow-x-hidden overflow-y-auto scrollbar-thin ${viewMode === 'preview' ? 'col-span-full' : ''}`}>
-                <div className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider mb-3 flex items-center justify-between pb-2 border-b border-border/60">
+          {/* LIVE PREVIEW PANE */}
+          {(viewMode === 'preview' || viewMode === 'split') && (
+            <div 
+              ref={previewRef}
+              onScroll={handlePreviewScroll}
+              className={`p-4 sm:p-6 bg-card min-w-0 overflow-y-auto scrollbar-thin h-full ${
+                viewMode === 'preview' ? 'col-span-full' : ''
+              }`}
+              style={{ minHeight: isFullscreen ? 'calc(100vh - 120px)' : minHeight }}
+            >
+              <div className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider mb-3 flex items-center justify-between pb-2 border-b border-border/60">
+                <span className="flex items-center gap-1.5">
+                  <Eye className="w-3.5 h-3.5 text-primary" />
                   <span>Xem trước trực quan (Live Preview)</span>
-                  <span className="text-[10px] text-emerald-500 font-mono font-bold bg-emerald-500/10 px-2 py-0.5 rounded-full">
-                    Active
-                  </span>
-                </div>
-                {value.trim() ? (
-                  <MarkdownRenderer content={value} />
-                ) : (
-                  <div className="py-16 text-center text-muted-foreground text-xs italic">
-                    Nội dung xem trước sẽ hiển thị ở đây khi bạn bắt đầu gõ...
-                  </div>
-                )}
+                </span>
+                <span className="text-[10px] text-emerald-500 font-mono font-bold bg-emerald-500/10 px-2 py-0.5 rounded-full">
+                  Đồng bộ tức thời
+                </span>
               </div>
-            )}
-          </div>
-        )}
+              {value.trim() ? (
+                <MarkdownRenderer content={value} />
+              ) : (
+                <div className="py-20 text-center text-muted-foreground text-xs italic space-y-2">
+                  <FileText className="w-8 h-8 mx-auto opacity-30" />
+                  <p>Nội dung xem trước sẽ tự động hiển thị ở đây khi bạn nhập nội dung đặc tả bên trái...</p>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Image Customization / Resize Modal (Opened when clicking on image or clicking Sliders icon) */}
-      {editorModalImage && (
+      {/* BOTTOM STATUS BAR */}
+      <div className="border-t border-border/70 bg-muted/30 py-1.5 px-4 text-[11px] text-muted-foreground flex flex-wrap items-center justify-between gap-2 select-none">
+        <div className="flex items-center gap-3">
+          <span className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block animate-pulse" />
+            <span className="font-medium text-foreground">Markdown Engine sẵn sàng</span>
+          </span>
+          <span className="hidden sm:inline text-muted-foreground/40">•</span>
+          <span className="hidden sm:inline font-mono">
+            Dòng {cursorPos.line}, Cột {cursorPos.col}
+          </span>
+          <span className="hidden md:inline text-muted-foreground/40">•</span>
+          <span className="hidden md:inline">
+            Kéo thả ảnh hoặc dán <kbd className="font-mono bg-accent px-1 rounded text-[10px]">Ctrl+V</kbd> để tải ảnh
+          </span>
+        </div>
+
+        <div className="flex items-center gap-2 font-mono">
+          <span>{lineCount} dòng</span>
+          <span>•</span>
+          <span>{wordCount} từ</span>
+          <span>•</span>
+          <span>{charCount} ký tự</span>
+        </div>
+      </div>
+
+      {/* Image Resize Modal */}
+      {resizeImageState && (
         <ImageResizeModal
-          isOpen={Boolean(editorModalImage)}
-          file={editorModalImage.file || null}
-          imageUrl={editorModalImage.url}
-          imageAlt={editorModalImage.alt}
-          initialWidth={editorModalImage.initialWidth}
-          initialHeight={editorModalImage.initialHeight}
-          onClose={() => setEditorModalImage(null)}
-          onConfirm={handleConfirmModalResize}
+          isOpen={Boolean(resizeImageState)}
+          file={resizeImageState.file}
+          imageUrl={resizeImageState.url}
+          imageAlt={resizeImageState.alt}
+          initialWidth={resizeImageState.targetWidth}
+          onClose={() => setResizeImageState(null)}
+          onConfirm={(processedFile, previewUrl, metadata) => {
+            const cleanAlt = resizeImageState.alt || 'Hình ảnh';
+            const widthTag = `<img src="${previewUrl}" alt="${cleanAlt}" width="${metadata.width}" />`;
+            insertBlock(widthTag);
+            setResizeImageState(null);
+            toast.success(`Đã chèn ảnh kích thước ${metadata.width}px`);
+          }}
         />
       )}
     </div>
   );
-};
+});
+
+MarkdownEditor.displayName = 'MarkdownEditor';
+export default MarkdownEditor;

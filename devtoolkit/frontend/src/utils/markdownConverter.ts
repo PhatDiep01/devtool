@@ -267,3 +267,86 @@ export function composeFullMarkdown(
   const cleanBody = (bodyContent || '').trimStart();
   return `${frontmatterLines.join('\n')}\n${cleanBody}`;
 }
+
+/**
+ * Beautifully aligns columns in a Markdown table with clean padding
+ */
+export function formatMarkdownTable(tableMarkdown: string): string {
+  if (!tableMarkdown || !tableMarkdown.includes('|')) return tableMarkdown;
+
+  const lines = tableMarkdown
+    .trim()
+    .split(/\r?\n/)
+    .filter((line) => line.trim().startsWith('|') || line.includes('|'));
+
+  if (lines.length < 2) return tableMarkdown;
+
+  const parsedRows = lines.map((line) => {
+    let content = line.trim();
+    if (content.startsWith('|')) content = content.slice(1);
+    if (content.endsWith('|')) content = content.slice(0, -1);
+    return content.split('|').map((cell) => cell.trim());
+  });
+
+  const numCols = Math.max(...parsedRows.map((row) => row.length));
+  if (numCols === 0) return tableMarkdown;
+
+  const colWidths = new Array(numCols).fill(3);
+  const alignments: Array<'left' | 'center' | 'right'> = new Array(numCols).fill('left');
+
+  // Determine alignments from separator row (row 1 if available)
+  if (parsedRows.length >= 2) {
+    const sepRow = parsedRows[1];
+    for (let c = 0; c < numCols; c++) {
+      const cell = sepRow[c] || '';
+      if (cell.startsWith(':') && cell.endsWith(':')) alignments[c] = 'center';
+      else if (cell.endsWith(':')) alignments[c] = 'right';
+      else alignments[c] = 'left';
+    }
+  }
+
+  // Calculate maximum column widths
+  for (let r = 0; r < parsedRows.length; r++) {
+    if (r === 1) continue; // Skip separator row
+    for (let c = 0; c < numCols; c++) {
+      const cellLen = (parsedRows[r][c] || '').length;
+      if (cellLen > colWidths[c]) {
+        colWidths[c] = cellLen;
+      }
+    }
+  }
+
+  // Build formatted rows
+  const formattedRows = parsedRows.map((row, r) => {
+    if (r === 1) {
+      const sepCells = colWidths.map((w, c) => {
+        const align = alignments[c];
+        const dashes = Math.max(3, w);
+        if (align === 'center') return `:${'-'.repeat(dashes - 2)}:`;
+        if (align === 'right') return `${'-'.repeat(dashes - 1)}:`;
+        return '-'.repeat(dashes);
+      });
+      return `| ${sepCells.join(' | ')} |`;
+    }
+
+    const cells: string[] = [];
+    for (let c = 0; c < numCols; c++) {
+      const text = row[c] || '';
+      const w = colWidths[c];
+      const align = alignments[c];
+      if (align === 'right') {
+        cells.push(text.padStart(w, ' '));
+      } else if (align === 'center') {
+        const pad = w - text.length;
+        const left = Math.floor(pad / 2);
+        const right = pad - left;
+        cells.push(' '.repeat(left) + text + ' '.repeat(right));
+      } else {
+        cells.push(text.padEnd(w, ' '));
+      }
+    }
+    return `| ${cells.join(' | ')} |`;
+  });
+
+  return formattedRows.join('\n');
+}

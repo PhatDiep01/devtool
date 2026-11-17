@@ -32,6 +32,7 @@ import { ApiPostmanTester } from '../api-docs/components/ApiPostmanTester';
 import { ApiModelsModal } from '../api-docs/components/ApiModelsModal';
 import { ApiErrorCodesModal } from '../api-docs/components/ApiErrorCodesModal';
 import { ApiImportExportModal } from '../api-docs/components/ApiImportExportModal';
+import { ApiEnvironmentsModal } from '../api-docs/components/ApiEnvironmentsModal';
 import { ApiSearchPalette } from '../api-docs/components/ApiSearchPalette';
 import { ConfirmModal } from '../../../components/ui/ConfirmModal';
 
@@ -72,6 +73,7 @@ export const ApiDocsPage: React.FC = () => {
   const [isModelsOpen, setIsModelsOpen] = useState(false);
   const [isErrorCodesOpen, setIsErrorCodesOpen] = useState(false);
   const [isImportExportOpen, setIsImportExportOpen] = useState(false);
+  const [isEnvironmentsOpen, setIsEnvironmentsOpen] = useState(false);
   const [isSearchPaletteOpen, setIsSearchPaletteOpen] = useState(false);
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
   const [deleteCandidate, setDeleteCandidate] = useState<ApiEndpoint | null>(null);
@@ -266,6 +268,10 @@ export const ApiDocsPage: React.FC = () => {
           onOpenErrorCodes={() => setIsErrorCodesOpen(true)}
           onOpenImportExport={() => setIsImportExportOpen(true)}
           onOpenSearchPalette={() => setIsSearchPaletteOpen(true)}
+          onOpenEnvironments={() => setIsEnvironmentsOpen(true)}
+          onDeleteEndpoint={ep => setDeleteCandidate(ep)}
+          onDuplicateEndpoint={handleDuplicate}
+          onTogglePinEndpoint={handleTogglePin}
         />
       </div>
 
@@ -369,6 +375,8 @@ export const ApiDocsPage: React.FC = () => {
                 onSelectEnvironment={env => setSelectedEnvironment(env)}
                 onSaveToSpecSuccess={loadModuleData}
                 onSwitchToDocs={() => setViewTab('docs')}
+                onOpenEnvironments={() => setIsEnvironmentsOpen(true)}
+                onDeleteEndpoint={ep => setDeleteCandidate(ep)}
               />
             ) : (
               <ApiEndpointDetailView
@@ -451,6 +459,15 @@ export const ApiDocsPage: React.FC = () => {
         onClose={() => setIsImportExportOpen(false)}
         moduleId={selectedModuleId}
         onImportSuccess={loadModuleData}
+      />
+
+      <ApiEnvironmentsModal
+        isOpen={isEnvironmentsOpen}
+        onClose={() => setIsEnvironmentsOpen(false)}
+        moduleId={selectedModuleId}
+        onEnvironmentsChanged={async () => {
+          await loadModuleData();
+        }}
       />
 
       <ApiSearchPalette

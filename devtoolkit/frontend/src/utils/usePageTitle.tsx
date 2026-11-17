@@ -80,6 +80,9 @@ export function getRouteTitle(pathname: string): string {
   }
 
   // Tools Module
+  if (path === '/tools/markdown-preview') {
+    return 'Xem trước Markdown (Preview)';
+  }
   if (path === '/tools/crypto-identity') {
     return 'Mã hóa & Định danh';
   }

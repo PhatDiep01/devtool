@@ -43,6 +43,7 @@ export const ApiErrorCodesModal: React.FC<ApiErrorCodesModalProps> = ({
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [httpStatusFilter, setHttpStatusFilter] = useState('all');
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
 
   // Form modal/drawer
   const [editingItem, setEditingItem] = useState<ApiErrorCode | null>(null);
@@ -61,6 +62,7 @@ export const ApiErrorCodesModal: React.FC<ApiErrorCodesModalProps> = ({
       setLoading(true);
       const res = await apiDocsApi.getErrorCodes({ moduleId });
       setErrorCodes(res.data);
+      setSelectedIds([]);
     } catch (err: any) {
       toast.error('Không thể tải bảng mã lỗi: ' + err.message);
     } finally {
@@ -146,6 +148,62 @@ export const ApiErrorCodesModal: React.FC<ApiErrorCodesModalProps> = ({
     }
   };
 
+  // Filtered error codes
+  const filtered = errorCodes.filter(ec => {
+    const inCategory = categoryFilter === 'all' || ec.category === categoryFilter;
+    const inHttp = httpStatusFilter === 'all' || String(ec.http_status) === httpStatusFilter;
+    const inSearch = !search.trim() || 
+      ec.code.toLowerCase().includes(search.toLowerCase()) || 
+      ec.message.toLowerCase().includes(search.toLowerCase()) || 
+      (ec.description || '').toLowerCase().includes(search.toLowerCase()) ||
+      (ec.resolution || '').toLowerCase().includes(search.toLowerCase());
+    return inCategory && inHttp && inSearch;
+  });
+
+  const isAllSelected = filtered.length > 0 && filtered.every(ec => selectedIds.includes(ec.id));
+
+  const toggleSelectAll = () => {
+    if (isAllSelected) {
+      setSelectedIds([]);
+    } else {
+      setSelectedIds(filtered.map(ec => ec.id));
+    }
+  };
+
+  const toggleSelectRow = (id: number) => {
+    setSelectedIds(prev => 
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+    );
+  };
+
+  const handleBatchDelete = async () => {
+    if (selectedIds.length === 0) return;
+    if (!window.confirm(`Bạn có chắc chắn muốn xóa ${selectedIds.length} mã lỗi đã chọn? Thao tác này không thể hoàn tác.`)) return;
+
+    try {
+      await apiDocsApi.deleteErrorCodesBatch({ ids: selectedIds });
+      toast.success(`Đã xóa ${selectedIds.length} mã lỗi thành công`);
+      await fetchErrorCodes();
+      onErrorCodesChanged?.();
+    } catch (err: any) {
+      toast.error('Lỗi khi xóa mã lỗi: ' + err.message);
+    }
+  };
+
+  const handleDeleteAll = async () => {
+    if (errorCodes.length === 0) return;
+    if (!window.confirm(`CẢNH BÁO: Bạn có chắc chắn muốn xóa TOÀN BỘ ${errorCodes.length} mã lỗi của phân hệ này? Thao tác này không thể hoàn tác.`)) return;
+
+    try {
+      await apiDocsApi.deleteErrorCodesBatch({ moduleId, deleteAll: true });
+      toast.success(`Đã xóa toàn bộ ${errorCodes.length} mã lỗi thành công!`);
+      await fetchErrorCodes();
+      onErrorCodesChanged?.();
+    } catch (err: any) {
+      toast.error('Lỗi khi xóa toàn bộ: ' + err.message);
+    }
+  };
+
   const handleCopyMarkdownTable = () => {
     let md = `| HTTP | Mã lỗi | Thông điệp | Nguyên nhân / Kích hoạt | Hướng xử lý |\n`;
     md += `|---|---|---|---|---|\n`;
@@ -161,18 +219,6 @@ export const ApiErrorCodesModal: React.FC<ApiErrorCodesModalProps> = ({
     navigator.clipboard.writeText(row);
     toast.success(`Đã sao chép mã lỗi ${ec.code}`);
   };
-
-  // Filtered error codes
-  const filtered = errorCodes.filter(ec => {
-    const inCategory = categoryFilter === 'all' || ec.category === categoryFilter;
-    const inHttp = httpStatusFilter === 'all' || String(ec.http_status) === httpStatusFilter;
-    const inSearch = !search.trim() || 
-      ec.code.toLowerCase().includes(search.toLowerCase()) || 
-      ec.message.toLowerCase().includes(search.toLowerCase()) || 
-      (ec.description || '').toLowerCase().includes(search.toLowerCase()) ||
-      (ec.resolution || '').toLowerCase().includes(search.toLowerCase());
-    return inCategory && inHttp && inSearch;
-  });
 
   if (!isOpen) return null;
 
@@ -210,7 +256,7 @@ export const ApiErrorCodesModal: React.FC<ApiErrorCodesModalProps> = ({
         </div>
 
         {/* Filters and Actions Bar */}
-        <div className="p-4 border-b border-border bg-muted/10 flex flex-wrap items-center justify-between gap-3 shrink-0">
+        <div className="p-3 sm:p-4 border-b border-border bg-muted/10 flex flex-wrap items-center justify-between gap-3 shrink-0">
           <div className="flex items-center gap-2 flex-1 min-w-[280px]">
             <div className="relative flex-1">
               <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -219,13 +265,13 @@ export const ApiErrorCodesModal: React.FC<ApiErrorCodesModalProps> = ({
                 value={search}
                 onChange={e => setSearch(e.target.value)}
                 placeholder="Tìm mã lỗi, thông điệp, nguyên nhân..."
-                className="w-full pl-9 pr-3 py-1.5 text-xs bg-card border border-border rounded-lg focus:outline-none focus:border-primary"
+                className="w-full pl-9 pr-3 py-1.5 text-xs bg-background border border-border rounded-xl focus:outline-none focus:border-primary shadow-xs"
               />
             </div>
             <select
               value={categoryFilter}
               onChange={e => setCategoryFilter(e.target.value)}
-              className="px-2.5 py-1.5 text-xs bg-card border border-border rounded-lg text-foreground focus:outline-none"
+              className="px-2.5 py-1.5 text-xs bg-background border border-border rounded-xl text-foreground focus:outline-none shadow-xs"
             >
               <option value="all">Tất cả nhóm</option>
               <option value="auth">Xác thực / Quyền</option>
@@ -236,7 +282,7 @@ export const ApiErrorCodesModal: React.FC<ApiErrorCodesModalProps> = ({
             <select
               value={httpStatusFilter}
               onChange={e => setHttpStatusFilter(e.target.value)}
-              className="px-2.5 py-1.5 text-xs bg-card border border-border rounded-lg text-foreground focus:outline-none"
+              className="px-2.5 py-1.5 text-xs bg-background border border-border rounded-xl text-foreground focus:outline-none shadow-xs"
             >
               <option value="all">Mọi HTTP Status</option>
               <option value="400">400 Bad Request</option>
@@ -248,22 +294,56 @@ export const ApiErrorCodesModal: React.FC<ApiErrorCodesModalProps> = ({
             </select>
           </div>
 
-          <button
-            onClick={handleStartCreate}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-primary text-primary-foreground rounded-lg hover:opacity-90 shadow-sm transition-opacity"
-          >
-            <Plus className="w-3.5 h-3.5" /> Thêm Mã Lỗi
-          </button>
+          <div className="flex items-center gap-2 flex-wrap">
+            {selectedIds.length > 0 && (
+              <button
+                type="button"
+                onClick={handleBatchDelete}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold bg-destructive/10 hover:bg-destructive/20 text-destructive border border-destructive/20 rounded-xl transition shadow-xs"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Xóa đã chọn ({selectedIds.length})</span>
+              </button>
+            )}
+
+            {errorCodes.length > 0 && (
+              <button
+                type="button"
+                onClick={handleDeleteAll}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold hover:bg-destructive/10 text-muted-foreground hover:text-destructive border border-border hover:border-destructive/30 rounded-xl transition shadow-xs"
+                title="Xóa toàn bộ tất cả mã lỗi của phân hệ này"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Xóa tất cả</span>
+              </button>
+            )}
+
+            <button
+              onClick={handleStartCreate}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold bg-primary text-primary-foreground rounded-xl hover:opacity-90 shadow-sm transition-opacity"
+            >
+              <Plus className="w-3.5 h-3.5" /> Thêm Mã Lỗi
+            </button>
+          </div>
         </div>
 
         {/* Modal Main Content */}
         <div className="flex-1 flex overflow-hidden">
           {/* Table List */}
           <div className="flex-1 overflow-y-auto p-4 scrollbar-thin">
-            <div className="border border-border rounded-xl overflow-hidden bg-card shadow-sm">
+            <div className="border border-border rounded-2xl overflow-hidden bg-card shadow-sm">
               <table className="w-full text-left text-xs">
-                <thead className="bg-muted/60 border-b border-border text-muted-foreground font-semibold">
+                <thead className="bg-muted/50 border-b border-border text-muted-foreground font-semibold">
                   <tr>
+                    <th className="p-3 w-10 text-center">
+                      <input
+                        type="checkbox"
+                        checked={isAllSelected}
+                        onChange={toggleSelectAll}
+                        className="rounded border-border text-primary focus:ring-primary cursor-pointer"
+                        title={isAllSelected ? 'Bỏ chọn tất cả' : 'Chọn tất cả'}
+                      />
+                    </th>
                     <th className="p-3 w-16 text-center">HTTP</th>
                     <th className="p-3 w-44">Mã lỗi (Code)</th>
                     <th className="p-3 w-1/5">Thông điệp</th>
@@ -275,15 +355,24 @@ export const ApiErrorCodesModal: React.FC<ApiErrorCodesModalProps> = ({
                 <tbody className="divide-y divide-border/60">
                   {filtered.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="p-8 text-center text-muted-foreground">
+                      <td colSpan={7} className="p-8 text-center text-muted-foreground">
                         Không có mã lỗi nào phù hợp
                       </td>
                     </tr>
                   ) : (
                     filtered.map(ec => {
                       const catInfo = CATEGORY_LABELS[ec.category] || { label: ec.category, color: 'bg-muted text-muted-foreground' };
+                      const isSelected = selectedIds.includes(ec.id);
                       return (
-                        <tr key={ec.id} className="hover:bg-muted/15 transition-colors">
+                        <tr key={ec.id} className={`hover:bg-muted/20 transition-colors ${isSelected ? 'bg-primary/5' : ''}`}>
+                          <td className="p-3 text-center">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => toggleSelectRow(ec.id)}
+                              className="rounded border-border text-primary focus:ring-primary cursor-pointer"
+                            />
+                          </td>
                           <td className="p-3 text-center">
                             <span className={`font-mono font-bold text-xs px-1.5 py-0.5 rounded ${
                               ec.http_status >= 500 ? 'bg-red-500/10 text-red-600' :
@@ -392,11 +481,11 @@ export const ApiErrorCodesModal: React.FC<ApiErrorCodesModalProps> = ({
                   </div>
 
                   <div>
-                    <label className="block text-xs font-semibold text-muted-foreground mb-1">Phân loại</label>
+                    <label className="block text-xs font-bold text-foreground mb-1">Phân loại</label>
                     <select
                       value={category}
                       onChange={e => setCategory(e.target.value as any)}
-                      className="w-full px-3 py-2 text-xs bg-card border border-border rounded-lg text-foreground focus:outline-none"
+                      className="w-full px-3 py-2 text-xs bg-background border border-border rounded-xl text-foreground focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary shadow-xs"
                     >
                       <option value="business">Nghiệp vụ</option>
                       <option value="validation">Đầu vào (Validation)</option>
@@ -407,35 +496,35 @@ export const ApiErrorCodesModal: React.FC<ApiErrorCodesModalProps> = ({
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-muted-foreground mb-1">Thông điệp trả về (Message) *</label>
+                  <label className="block text-xs font-bold text-foreground mb-1">Thông điệp trả về (Message) *</label>
                   <input
                     type="text"
                     value={message}
                     onChange={e => setMessage(e.target.value)}
                     placeholder="Thông điệp hiển thị cho người dùng hoặc log..."
-                    className="w-full px-3 py-2 text-xs bg-muted/30 border border-border rounded-lg focus:border-primary focus:outline-none"
+                    className="w-full px-3 py-2 text-xs bg-background border border-border rounded-xl focus:border-primary focus:ring-1 focus:ring-primary focus:outline-none shadow-xs"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-muted-foreground mb-1">Nguyên nhân kích hoạt (Trigger condition)</label>
+                  <label className="block text-xs font-bold text-foreground mb-1">Nguyên nhân kích hoạt (Trigger condition)</label>
                   <textarea
                     value={description}
                     onChange={e => setDescription(e.target.value)}
                     placeholder="Ví dụ: Thiếu tham số bắt buộc hoặc khoảng thời gian không hợp lệ..."
                     rows={3}
-                    className="w-full px-3 py-2 text-xs bg-muted/30 border border-border rounded-lg focus:border-primary focus:outline-none"
+                    className="w-full px-3 py-2 text-xs bg-background border border-border rounded-xl focus:border-primary focus:ring-1 focus:ring-primary focus:outline-none shadow-xs"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-muted-foreground mb-1">Hướng dẫn xử lý (Action / Resolution)</label>
+                  <label className="block text-xs font-bold text-foreground mb-1">Hướng dẫn xử lý (Action / Resolution)</label>
                   <textarea
                     value={resolution}
                     onChange={e => setResolution(e.target.value)}
                     placeholder="Client cần làm gì: Kiểm tra lại form, Refresh token hay đăng nhập lại..."
                     rows={3}
-                    className="w-full px-3 py-2 text-xs bg-muted/30 border border-border rounded-lg focus:border-primary focus:outline-none"
+                    className="w-full px-3 py-2 text-xs bg-background border border-border rounded-xl focus:border-primary focus:ring-1 focus:ring-primary focus:outline-none shadow-xs"
                   />
                 </div>
               </div>
@@ -446,13 +535,13 @@ export const ApiErrorCodesModal: React.FC<ApiErrorCodesModalProps> = ({
                     setIsCreating(false);
                     setEditingItem(null);
                   }}
-                  className="px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground border border-border rounded-lg"
+                  className="px-3.5 py-2 text-xs font-semibold text-muted-foreground hover:text-foreground border border-border rounded-xl hover:bg-muted transition"
                 >
                   Hủy
                 </button>
                 <button
                   onClick={handleSave}
-                  className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold bg-primary text-primary-foreground rounded-lg hover:opacity-90 shadow-sm"
+                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold bg-primary text-primary-foreground rounded-xl hover:opacity-90 shadow-sm transition"
                 >
                   <Check className="w-3.5 h-3.5" /> Lưu Mã Lỗi
                 </button>

@@ -21,7 +21,7 @@ import { toast } from 'react-hot-toast';
 import { docsApi, filesApi } from '../../../services/api';
 import { Module, Screen, ScreenImage } from '../../../types';
 import { useJiraAuthStore } from '../../../stores/jira-auth.store';
-import { MarkdownEditor } from '../components/MarkdownEditor';
+import { MarkdownEditor, MarkdownEditorRef } from '../components/MarkdownEditor';
 import { ScreenImagesGallery } from '../components/ScreenImagesGallery';
 import { splitFrontmatterAndBody, composeFullMarkdown, removeImageFromMarkdown } from '../../../utils/markdownConverter';
 import { SearchableSelect, SelectOption } from '../../../components/ui';
@@ -58,6 +58,20 @@ export const ScreenEditorPage: React.FC = () => {
 
   // File input ref for importing .md files
   const mdFileInputRef = useRef<HTMLInputElement>(null);
+  // Markdown editor imperative ref
+  const editorRef = useRef<MarkdownEditorRef>(null);
+
+  // Global Ctrl+S keyboard listener
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        handleSave();
+      }
+    };
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [title, selectedModuleId, bodyContent, screenImages, status, author, jiraKey, tagsInput]);
 
   // Initial load
   useEffect(() => {
@@ -606,14 +620,18 @@ Mô tả vai trò, mục tiêu và phạm vi của màn hình.
         onImagesChange={setScreenImages}
         screenId={!isNew && id ? Number(id) : undefined}
         onInsertToMarkdown={(snippet) => {
-          setBodyContent((prev) => `${prev.trim()}\n\n${snippet}\n`);
+          if (editorRef.current) {
+            editorRef.current.insertTextAtCursor(snippet);
+          } else {
+            setBodyContent((prev) => `${prev.trim()}\n\n${snippet}\n`);
+          }
         }}
         onDeleteImage={handleGalleryDeleteImage}
         title="Ảnh đính kèm & Mockup giao diện"
         deferUpload={true}
       />
 
-      {/* Rich Markdown & WYSIWYG Editor */}
+      {/* Rich Markdown Editor */}
       <div>
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 mb-2">
           <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
@@ -621,12 +639,13 @@ Mô tả vai trò, mục tiêu và phạm vi của màn hình.
             <span>Nội dung tài liệu</span>
           </label>
           <span className="text-[11px] text-muted-foreground flex items-center gap-1">
-            <Sparkles className="w-3 h-3 text-amber-500" />
-            <span>Soạn thảo trực quan tự nhiên (như Word) hoặc chuyển qua mã Markdown tùy ý</span>
+            <Sparkles className="w-3 h-3 text-emerald-500" />
+            <span>Soạn thảo mượt mà với Live Preview đồng bộ, hỗ trợ bảng, callouts và phím tắt thông minh</span>
           </span>
         </div>
 
         <MarkdownEditor
+          ref={editorRef}
           value={bodyContent}
           onChange={setBodyContent}
           onSave={handleSave}

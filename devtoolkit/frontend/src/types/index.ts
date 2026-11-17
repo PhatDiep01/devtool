@@ -717,11 +717,19 @@ export interface ApiErrorCode {
   updated_at?: string;
 }
 
+export interface ApiEnvironmentVariable {
+  key: string;
+  value: string;
+  description?: string;
+  enabled: boolean;
+}
+
 export interface ApiEnvironment {
   id: string;
   name: string;
   url: string;
   is_default: boolean;
+  variables?: ApiEnvironmentVariable[];
 }
 
 

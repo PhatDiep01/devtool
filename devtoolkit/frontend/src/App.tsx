@@ -10,6 +10,7 @@ import { ImportScreen } from './modules/docs/pages/ImportScreen';
 import { SearchResults } from './modules/docs/pages/SearchResults';
 import { BugTrackerPage } from './modules/docs/pages/BugTrackerPage';
 import { ApiDocsPage } from './modules/docs/pages/ApiDocsPage';
+import { MenuAclPage } from './modules/docs/pages/MenuAclPage';
 import { JiraDashboard } from './modules/jira/pages/JiraDashboard';
 import { KanbanBoard } from './modules/jira/pages/KanbanBoard';
 import { JiraSprintsPage } from './modules/jira/pages/JiraSprintsPage';
@@ -22,6 +23,7 @@ import { TextFormatterPage } from './modules/tools/TextFormatter/TextFormatterPa
 import { CompareTextPage } from './modules/tools/CompareText/CompareTextPage';
 import { StickyNotesPage } from './modules/tools/StickyNotes/StickyNotesPage';
 import { CryptoIdentityPage } from './modules/tools/CryptoIdentity';
+import { MarkdownPreviewPage } from './modules/tools/MarkdownPreview';
 import { useThemeStore } from './stores/theme.store';
 import { PageTitleManager } from './utils/usePageTitle';
 import { AppUpdateModal } from './components/common/AppUpdateModal';
@@ -49,12 +51,16 @@ export const App: React.FC = () => {
           <Route path="/docs" element={<DocsDashboard />} />
           <Route path="/docs/api" element={<ApiDocsPage />} />
           <Route path="/docs/bugs" element={<BugTrackerPage />} />
-          <Route path="/docs/:moduleSlug" element={<ModuleScreens />} />
-          <Route path="/docs/screen/:id" element={<ScreenDetail />} />
-          <Route path="/docs/screen/:id/edit" element={<ScreenEditorPage />} />
+          <Route path="/docs/menu-acl" element={<MenuAclPage />} />
           <Route path="/docs/screens/new" element={<ScreenEditorPage />} />
+          <Route path="/docs/screen/new" element={<Navigate to="/docs/screens/new" replace />} />
+          <Route path="/docs/screen" element={<Navigate to="/docs" replace />} />
+          <Route path="/docs/screens" element={<Navigate to="/docs" replace />} />
+          <Route path="/docs/screen/:id/edit" element={<ScreenEditorPage />} />
+          <Route path="/docs/screen/:id" element={<ScreenDetail />} />
           <Route path="/docs/import" element={<ImportScreen />} />
           <Route path="/docs/search" element={<SearchResults />} />
+          <Route path="/docs/:moduleSlug" element={<ModuleScreens />} />
 
           {/* Jira Module - Protected with JiraRouteGuard */}
           <Route 
@@ -115,6 +121,7 @@ export const App: React.FC = () => {
           />
 
           {/* Dev Tools Module */}
+          <Route path="/tools/markdown-preview" element={<MarkdownPreviewPage />} />
           <Route path="/tools/crypto-identity" element={<CryptoIdentityPage />} />
           <Route path="/tools/sticky-notes" element={<StickyNotesPage />} />
           <Route path="/tools/text-formatter" element={<TextFormatterPage />} />

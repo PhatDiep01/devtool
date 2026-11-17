@@ -29,7 +29,8 @@ import {
   LogIn,
   User,
   Activity,
-  ShieldCheck
+  ShieldCheck,
+  FileCode
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useJiraAuthStore } from '../../stores/jira-auth.store';
@@ -131,6 +132,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
           path: '/docs/bugs',
           icon: Bug,
           badge: 'Tracker'
+        },
+        {
+          id: 'docs-menu-acl',
+          title: 'Quản lý Menu & ACL',
+          desc: 'Phân quyền CSDL & Sync Wizard',
+          path: '/docs/menu-acl',
+          icon: ShieldCheck,
+          badge: 'Mới'
         }
       ]
     },
@@ -188,6 +197,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
       icon: Wrench,
       badge: 'Tiện ích',
       children: [
+        {
+          id: 'tool-markdown-preview',
+          title: 'Xem trước Markdown',
+          desc: 'Soạn thảo & xem trước Markdown trực quan',
+          path: '/tools/markdown-preview',
+          icon: FileCode,
+          badge: 'Mới'
+        },
         {
           id: 'tool-crypto-identity',
           title: 'Mã hóa & Định danh',

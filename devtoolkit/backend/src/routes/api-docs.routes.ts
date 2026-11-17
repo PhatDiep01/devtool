@@ -715,6 +715,112 @@ router.delete('/error-codes/:id', (req: Request, res: Response) => {
   }
 });
 
+// POST /api/api-docs/error-codes/batch-delete - Batch delete or delete all
+router.post('/error-codes/batch-delete', (req: Request, res: Response) => {
+  try {
+    const db = getDb();
+    const { ids, moduleId, deleteAll } = req.body;
+    const modIdNum = moduleId ? Number(moduleId) : null;
+
+    if (deleteAll) {
+      if (!modIdNum || isNaN(modIdNum)) {
+        return res.status(400).json({ error: 'Vui lòng cung cấp moduleId hợp lệ để xóa toàn bộ' });
+      }
+      const info = db.prepare('DELETE FROM api_error_codes WHERE module_id = ?').run(modIdNum);
+      return res.json({ message: `Đã xóa toàn bộ ${info.changes} mã lỗi của phân hệ`, count: info.changes });
+    }
+
+    if (Array.isArray(ids) && ids.length > 0) {
+      const validIds = ids.map(x => Number(x)).filter(n => Number.isInteger(n) && n > 0);
+      if (validIds.length === 0) {
+        return res.status(400).json({ error: 'Danh sách ID không chứa bản ghi hợp lệ' });
+      }
+
+      const chunk = validIds.slice(0, 500);
+      const placeholders = chunk.map(() => '?').join(',');
+      let sql = `DELETE FROM api_error_codes WHERE id IN (${placeholders})`;
+      const params: any[] = [...chunk];
+      if (modIdNum && !isNaN(modIdNum)) {
+        sql += ` AND module_id = ?`;
+        params.push(modIdNum);
+      }
+
+      const info = db.prepare(sql).run(...params);
+      return res.json({ message: `Đã xóa thành công ${info.changes} mã lỗi`, count: info.changes });
+    }
+
+    res.status(400).json({ error: 'Cần cung cấp danh sách ids hoặc cờ deleteAll' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Helper check for cloud metadata / dangerous hosts (SSRF Protection)
+const isBlockedMetadataHost = (urlStr: string): boolean => {
+  try {
+    const parsed = new URL(urlStr);
+    const host = parsed.hostname.toLowerCase();
+    // Block cloud provider internal metadata endpoints
+    if (host === '169.254.169.254' || host === 'metadata.google.internal' || host === 'instance-data') {
+      return true;
+    }
+    return false;
+  } catch {
+    return true;
+  }
+};
+
+// POST /api/api-docs/import/url - Fetch remote Swagger / OpenAPI JSON from URL
+router.post('/import/url', async (req: Request, res: Response) => {
+  try {
+    const { url } = req.body;
+    if (!url || typeof url !== 'string' || !url.trim()) {
+      return res.status(400).json({ error: 'Vui lòng nhập đường dẫn URL Swagger / OpenAPI hợp lệ' });
+    }
+
+    const targetUrl = url.trim();
+    if (!/^https?:\/\//i.test(targetUrl)) {
+      return res.status(400).json({ error: 'URL phải bắt đầu bằng http:// hoặc https://' });
+    }
+
+    if (isBlockedMetadataHost(targetUrl)) {
+      return res.status(403).json({ error: 'Bị từ chối: Không được phép truy cập Cloud Metadata endpoint' });
+    }
+
+    const response = await fetch(targetUrl, {
+      signal: AbortSignal.timeout(15000),
+      headers: {
+        'Accept': 'application/json, text/plain, */*'
+      }
+    });
+
+    if (!response.ok) {
+      return res.status(response.status).json({
+        error: `Không thể nạp dữ liệu từ URL (Mã lỗi HTTP ${response.status}: ${response.statusText})`
+      });
+    }
+
+    const text = await response.text();
+    if (text.length > 15 * 1024 * 1024) {
+      return res.status(413).json({ error: 'Dữ liệu Swagger vượt quá giới hạn cho phép (15MB)' });
+    }
+
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      return res.status(400).json({ error: 'URL không trả về định dạng JSON hợp lệ' });
+    }
+
+    res.json(data);
+  } catch (error: any) {
+    if (error.name === 'TimeoutError') {
+      return res.status(504).json({ error: 'Quá thời gian kết nối đến máy chủ Swagger (Timeout 15s)' });
+    }
+    res.status(500).json({ error: 'Lỗi kết nối khi tải URL: ' + error.message });
+  }
+});
+
 // ==========================================
 // 4. ENVIRONMENTS SETTINGS
 // ==========================================
@@ -840,8 +946,11 @@ router.post('/proxy-test', async (req: Request, res: Response) => {
       status: number;
       statusText: string;
       headers: Record<string, string>;
-      body: string;
+      respBuffer: Buffer;
       sizeBytes: number;
+      isBinary: boolean;
+      fileName: string;
+      contentType: string;
     }>((resolve, reject) => {
       const options = {
         method: upperMethod,
@@ -853,15 +962,19 @@ router.post('/proxy-test', async (req: Request, res: Response) => {
       const proxyReq = httpModule.request(fullUrl, options, (proxyRes) => {
         const chunks: Buffer[] = [];
         let totalSize = 0;
+        const MAX_PROXY_RESPONSE_BYTES = 25 * 1024 * 1024; // 25 MB
 
         proxyRes.on('data', (chunk) => {
-          chunks.push(chunk);
           totalSize += chunk.length;
+          if (totalSize > MAX_PROXY_RESPONSE_BYTES) {
+            proxyReq.destroy(new Error(`Dung lượng phản hồi vượt quá giới hạn tối đa cho phép (${MAX_PROXY_RESPONSE_BYTES / (1024 * 1024)}MB)`));
+            return;
+          }
+          chunks.push(chunk);
         });
 
         proxyRes.on('end', () => {
           const respBuffer = Buffer.concat(chunks);
-          const respText = respBuffer.toString('utf8');
           const respHeaders: Record<string, string> = {};
           for (const [hk, hv] of Object.entries(proxyRes.headers)) {
             if (hv !== undefined) {
@@ -869,12 +982,26 @@ router.post('/proxy-test', async (req: Request, res: Response) => {
             }
           }
 
+          const contentType = respHeaders['content-type'] || '';
+          const contentDisposition = respHeaders['content-disposition'] || '';
+          const isBinary = /^(image\/|audio\/|video\/|application\/(pdf|zip|x-zip-compressed|gzip|tar|octet-stream|vnd\.))/i.test(contentType) || 
+                           /attachment/i.test(contentDisposition);
+
+          let fileName = '';
+          const match = /filename\*?=['"]?(?:UTF-\d['"]*)?([^;\r\n"']*)['"]?/i.exec(contentDisposition);
+          if (match && match[1]) {
+            fileName = decodeURIComponent(match[1].trim());
+          }
+
           resolve({
             status: proxyRes.statusCode || 200,
             statusText: proxyRes.statusMessage || 'OK',
             headers: respHeaders,
-            body: respText,
-            sizeBytes: totalSize
+            respBuffer,
+            sizeBytes: totalSize,
+            isBinary,
+            fileName,
+            contentType
           });
         });
       });
@@ -896,10 +1023,30 @@ router.post('/proxy-test', async (req: Request, res: Response) => {
     const endTime = performance.now();
     const durationMs = Math.round(endTime - startTime);
 
-    let parsedBody: any = result.body;
+    if (result.isBinary) {
+      const base64Data = result.respBuffer.toString('base64');
+      return res.json({
+        success: true,
+        status: result.status,
+        statusText: result.statusText,
+        durationMs,
+        sizeBytes: result.sizeBytes,
+        headers: result.headers,
+        isBinary: true,
+        base64Data,
+        fileName: result.fileName || 'file_download',
+        contentType: result.contentType,
+        rawBody: `[Dữ liệu tệp / Binary file: ${result.fileName || 'download'} (${result.sizeBytes} bytes)]`,
+        body: null,
+        isJson: false
+      });
+    }
+
+    const respText = result.respBuffer.toString('utf8');
+    let parsedBody: any = respText;
     let isJson = false;
     try {
-      parsedBody = JSON.parse(result.body);
+      parsedBody = JSON.parse(respText);
       isJson = true;
     } catch {
       isJson = false;
@@ -913,8 +1060,9 @@ router.post('/proxy-test', async (req: Request, res: Response) => {
       sizeBytes: result.sizeBytes,
       headers: result.headers,
       body: parsedBody,
-      rawBody: result.body,
-      isJson
+      rawBody: respText,
+      isJson,
+      isBinary: false
     });
 
   } catch (error: any) {

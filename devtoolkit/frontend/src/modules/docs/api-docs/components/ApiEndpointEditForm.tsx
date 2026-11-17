@@ -702,7 +702,7 @@ export const ApiEndpointEditForm: React.FC<ApiEndpointEditFormProps> = ({
                       setRequestBodies(updated);
                     }}
                     rows={8}
-                    className="w-full p-3 text-xs font-mono bg-slate-950 text-slate-100 border border-border rounded-xl focus:outline-none leading-relaxed"
+                    className="w-full p-3 text-xs font-mono bg-background dark:bg-slate-950 text-foreground dark:text-slate-100 border border-border rounded-xl focus:outline-none focus:ring-1 focus:ring-primary leading-relaxed"
                   />
                 </div>
               </div>
@@ -837,7 +837,7 @@ export const ApiEndpointEditForm: React.FC<ApiEndpointEditFormProps> = ({
                     setResponses(updated);
                   }}
                   rows={8}
-                  className="w-full p-3 text-xs font-mono bg-slate-950 text-slate-100 border border-border rounded-xl focus:outline-none leading-relaxed"
+                  className="w-full p-3 text-xs font-mono bg-background dark:bg-slate-950 text-foreground dark:text-slate-100 border border-border rounded-xl focus:outline-none focus:ring-1 focus:ring-primary leading-relaxed"
                 />
               </div>
             </div>

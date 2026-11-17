@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { 
   Play, 
   Send, 
@@ -31,7 +31,12 @@ import {
   FileText,
   HelpCircle,
   Loader2,
-  ArrowRight
+  ArrowRight,
+  ChevronDown,
+  FileSpreadsheet,
+  FileArchive,
+  FileImage,
+  Info
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { ApiEndpoint, ApiEnvironment, ApiMethod } from '@/types';
@@ -69,6 +74,8 @@ interface ApiPostmanTesterProps {
   onSelectEnvironment?: (env: ApiEnvironment) => void;
   onSaveToSpecSuccess?: () => void;
   onSwitchToDocs?: () => void;
+  onOpenEnvironments?: () => void;
+  onDeleteEndpoint?: (endpoint: ApiEndpoint) => void;
 }
 
 export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
@@ -77,7 +84,9 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
   selectedEnvironment,
   onSelectEnvironment,
   onSaveToSpecSuccess,
-  onSwitchToDocs
+  onSwitchToDocs,
+  onOpenEnvironments,
+  onDeleteEndpoint
 }) => {
   const { user: jiraUser, token: jiraToken } = useJiraAuthStore();
 
@@ -116,6 +125,9 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
 
   // Execution & Response State
   const [isLoading, setIsLoading] = useState(false);
+  const [isSendDropdownOpen, setIsSendDropdownOpen] = useState(false);
+  const sendDropdownRef = useRef<HTMLDivElement>(null);
+
   const [responseResult, setResponseResult] = useState<{
     status?: number;
     statusText?: string;
@@ -125,8 +137,23 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
     body?: any;
     rawBody?: string;
     isJson?: boolean;
+    isBinary?: boolean;
+    base64Data?: string;
+    fileName?: string;
+    contentType?: string;
     error?: string;
   } | null>(null);
+
+  // Close split dropdown on click outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (sendDropdownRef.current && !sendDropdownRef.current.contains(e.target as Node)) {
+        setIsSendDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   // Response UI state
   const [activeRespTab, setActiveRespTab] = useState<'body' | 'headers'>('body');
@@ -262,34 +289,98 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
     }
   }, [selectedEnvironment]);
 
+  // Helper to interpolate environment variables like {{baseUrl}}, {{token}}, {{id}}
+  const interpolateVars = useCallback((text: string): string => {
+    if (!text || typeof text !== 'string') return text;
+    return text.replace(/\{\{([^{}]+)\}\}/g, (match, varName) => {
+      const trimmed = varName.trim();
+      if (trimmed === 'baseUrl' && activeEnv?.url) {
+        return activeEnv.url.replace(/\/+$/, '');
+      }
+      const found = activeEnv?.variables?.find(v => v.enabled && v.key === trimmed);
+      if (found) {
+        return found.value;
+      }
+      return match;
+    });
+  }, [activeEnv]);
+
+  // File download helper from Base64 (High-performance direct TypedArray allocation)
+  const downloadBase64File = (base64: string, fileName: string, mimeType: string) => {
+    try {
+      const cleanBase64 = base64.replace(/\s/g, '');
+      const byteCharacters = atob(cleanBase64);
+      const byteArray = new Uint8Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteArray[i] = byteCharacters.charCodeAt(i);
+      }
+      const blob = new Blob([byteArray], { type: mimeType });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(`Đã tải xuống ${fileName}!`);
+    } catch (err: any) {
+      toast.error('Lỗi khi tải file: ' + err.message);
+    }
+  };
+
+  // Text file download helper
+  const downloadTextFile = (content: string, fileName: string, mimeType = 'application/json') => {
+    try {
+      const blob = new Blob([content], { type: mimeType });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(`Đã tải xuống ${fileName}!`);
+    } catch (err: any) {
+      toast.error('Lỗi khi tải file: ' + err.message);
+    }
+  };
+
   // Compute interpolated URL
   const { fullTargetUrl, computedPath, queryParamString } = useMemo(() => {
     let resolvedPath = path;
 
-    // Substitute path variables
+    // Helper to safely escape regexp special characters
+    const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    // 1. Substitute path variables
     pathVariables.forEach(pv => {
       if (pv.name && pv.value) {
+        const val = interpolateVars(pv.value);
+        const safeName = escapeRegExp(pv.name);
         resolvedPath = resolvedPath
-          .replace(new RegExp(`\\{${pv.name}\\}`, 'g'), encodeURIComponent(pv.value))
-          .replace(new RegExp(`:${pv.name}\\b`, 'g'), encodeURIComponent(pv.value));
+          .replace(new RegExp(`\\{${safeName}\\}`, 'g'), encodeURIComponent(val))
+          .replace(new RegExp(`:${safeName}\\b`, 'g'), encodeURIComponent(val));
       }
     });
 
-    // Compute Query params
+    // 2. Interpolate variables in path
+    resolvedPath = interpolateVars(resolvedPath);
+
+    // 3. Compute Query params with variable interpolation
     const activeQps = queryParams.filter(q => q.enabled && q.key.trim());
     const searchParams = new URLSearchParams();
     activeQps.forEach(q => {
-      searchParams.append(q.key.trim(), q.value);
+      const key = interpolateVars(q.key.trim());
+      const val = interpolateVars(q.value);
+      searchParams.append(key, val);
     });
 
     // Add apiKey if in query
     if (authType === 'apiKey' && apiKeyLocation === 'query' && apiKeyName.trim() && apiKeyValue.trim()) {
-      searchParams.append(apiKeyName.trim(), apiKeyValue.trim());
+      searchParams.append(interpolateVars(apiKeyName.trim()), interpolateVars(apiKeyValue.trim()));
     }
 
     const qStr = searchParams.toString();
     const base = customBaseUrl.trim() 
-      ? customBaseUrl.trim().replace(/\/+$/, '') 
+      ? interpolateVars(customBaseUrl.trim().replace(/\/+$/, '')) 
       : activeEnv?.url?.replace(/\/+$/, '') || 'https://api.internal.domain';
 
     const cleanPath = resolvedPath.startsWith('/') ? resolvedPath : `/${resolvedPath}`;
@@ -300,7 +391,7 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
       computedPath: cleanPath,
       queryParamString: qStr
     };
-  }, [path, pathVariables, queryParams, activeEnv, customBaseUrl, authType, apiKeyLocation, apiKeyName, apiKeyValue]);
+  }, [path, pathVariables, queryParams, activeEnv, customBaseUrl, authType, apiKeyLocation, apiKeyName, apiKeyValue, interpolateVars]);
 
   // JSON Body format / validate
   const jsonValidity = useMemo(() => {
@@ -351,45 +442,49 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
-        handleSendRequest();
+        handleSendRequest(false);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   });
 
-  // Execute Request (Postman Send)
-  const handleSendRequest = async () => {
+  // Execute Request (Postman Send or Send & Download)
+  const handleSendRequest = async (downloadOnSuccess = false) => {
     if (isLoading) return;
 
-    // Build headers object
+    // Build headers object with variable interpolation
     const reqHeaders: Record<string, string> = {};
     headers.filter(h => h.enabled && h.key.trim()).forEach(h => {
-      reqHeaders[h.key.trim()] = h.value;
+      reqHeaders[interpolateVars(h.key.trim())] = interpolateVars(h.value);
     });
 
-    // Apply Auth
+    // Apply Auth with variable interpolation
     if (authType === 'bearer' && bearerToken.trim()) {
-      reqHeaders['Authorization'] = bearerToken.startsWith('Bearer ') ? bearerToken : `Bearer ${bearerToken}`;
+      const tokenVal = interpolateVars(bearerToken.trim());
+      reqHeaders['Authorization'] = tokenVal.startsWith('Bearer ') ? tokenVal : `Bearer ${tokenVal}`;
     } else if (authType === 'basic' && (basicUser || basicPass)) {
-      const credentials = btoa(`${basicUser}:${basicPass}`);
+      const u = interpolateVars(basicUser);
+      const p = interpolateVars(basicPass);
+      const credentials = btoa(`${u}:${p}`);
       reqHeaders['Authorization'] = `Basic ${credentials}`;
     } else if (authType === 'apiKey' && apiKeyLocation === 'header' && apiKeyName.trim() && apiKeyValue.trim()) {
-      reqHeaders[apiKeyName.trim()] = apiKeyValue.trim();
+      reqHeaders[interpolateVars(apiKeyName.trim())] = interpolateVars(apiKeyValue.trim());
     }
 
-    // Prepare body
+    // Prepare body with variable interpolation
     let finalBody: any = undefined;
     const isMutation = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method.toUpperCase());
     if (isMutation) {
       if (bodyType === 'json' && jsonBody.trim()) {
+        const interpolated = interpolateVars(jsonBody);
         try {
-          finalBody = JSON.parse(jsonBody);
+          finalBody = JSON.parse(interpolated);
         } catch {
-          finalBody = jsonBody;
+          finalBody = interpolated;
         }
       } else if (bodyType === 'raw' && rawTextBody.trim()) {
-        finalBody = rawTextBody;
+        finalBody = interpolateVars(rawTextBody);
       }
     }
 
@@ -410,7 +505,7 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
         });
 
         const data = proxyRes.data;
-        setResponseResult({
+        const resObj = {
           status: data.status,
           statusText: data.statusText,
           durationMs: data.durationMs,
@@ -418,11 +513,24 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
           headers: data.headers,
           body: data.body,
           rawBody: data.rawBody,
-          isJson: data.isJson
-        });
-
-        // Add to history
+          isJson: data.isJson,
+          isBinary: data.isBinary,
+          base64Data: data.base64Data,
+          fileName: data.fileName,
+          contentType: data.contentType
+        };
+        setResponseResult(resObj);
         addHistoryItem(method, fullTargetUrl, data.status, data.durationMs);
+
+        if (downloadOnSuccess || data.isBinary) {
+          if (data.isBinary && data.base64Data) {
+            downloadBase64File(data.base64Data, data.fileName || 'download', data.contentType || 'application/octet-stream');
+          } else if (downloadOnSuccess) {
+            const rawContent = data.rawBody || (typeof data.body === 'object' ? JSON.stringify(data.body, null, 2) : String(data.body || ''));
+            const fName = `${(endpoint.path || 'response').replace(/[^a-zA-Z0-9_-]/g, '_')}_${Date.now()}.json`;
+            downloadTextFile(rawContent, fName);
+          }
+        }
 
       } else {
         // Mode 2: Direct Browser Fetch (Yêu cầu API đích hỗ trợ CORS)
@@ -437,17 +545,19 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
         const durationMs = Math.round(endTime - startTime);
 
         const contentType = response.headers.get('content-type') || '';
-        let respData: any;
-        let rawBodyStr = '';
-        let isJson = false;
+        const contentDisposition = response.headers.get('content-disposition') || '';
+        const isBinary = /^(image\/|audio\/|video\/|application\/(pdf|zip|x-zip-compressed|gzip|tar|octet-stream|vnd\.))/i.test(contentType) || /attachment/i.test(contentDisposition);
 
-        if (contentType.includes('application/json')) {
-          respData = await response.json();
-          rawBodyStr = JSON.stringify(respData, null, 2);
-          isJson = true;
+        let fileName = 'download';
+        const match = /filename\*?=['"]?(?:UTF-\d['"]*)?([^;\r\n"']*)['"]?/i.exec(contentDisposition);
+        if (match && match[1]) {
+          fileName = decodeURIComponent(match[1].trim());
         } else {
-          rawBodyStr = await response.text();
-          respData = rawBodyStr;
+          try {
+            const p = new URL(fullTargetUrl).pathname;
+            const seg = p.split('/').filter(Boolean).pop();
+            if (seg && seg.includes('.')) fileName = seg;
+          } catch {}
         }
 
         const resHeaders: Record<string, string> = {};
@@ -455,16 +565,71 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
           resHeaders[k] = v;
         });
 
-        setResponseResult({
-          status: response.status,
-          statusText: response.statusText,
-          durationMs,
-          sizeBytes: new Blob([rawBodyStr]).size,
-          headers: resHeaders,
-          body: respData,
-          rawBody: rawBodyStr,
-          isJson
-        });
+        if (isBinary || downloadOnSuccess) {
+          const blob = await response.blob();
+          if (downloadOnSuccess || isBinary) {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = fileName || `download_${Date.now()}`;
+            a.click();
+            URL.revokeObjectURL(url);
+            toast.success(`Đã tải xuống file ${fileName}!`);
+          }
+
+          let base64Data: string | undefined = undefined;
+          if (contentType.startsWith('image/')) {
+            const reader = new FileReader();
+            base64Data = await new Promise<string>((resolve) => {
+              reader.onloadend = () => {
+                const res = reader.result as string;
+                resolve(res.split(',')[1] || '');
+              };
+              reader.readAsDataURL(blob);
+            });
+          }
+
+          setResponseResult({
+            status: response.status,
+            statusText: response.statusText,
+            durationMs,
+            sizeBytes: blob.size,
+            headers: resHeaders,
+            isBinary: true,
+            base64Data,
+            fileName,
+            contentType,
+            rawBody: `[Dữ liệu tệp / Binary file: ${fileName} (${blob.size} bytes)]`,
+            body: null,
+            isJson: false
+          });
+        } else {
+          let respData: any;
+          let rawBodyStr = '';
+          let isJson = false;
+
+          if (contentType.includes('application/json')) {
+            respData = await response.json();
+            rawBodyStr = JSON.stringify(respData, null, 2);
+            isJson = true;
+          } else {
+            rawBodyStr = await response.text();
+            respData = rawBodyStr;
+          }
+
+          setResponseResult({
+            status: response.status,
+            statusText: response.statusText,
+            durationMs,
+            sizeBytes: new Blob([rawBodyStr]).size,
+            headers: resHeaders,
+            body: respData,
+            rawBody: rawBodyStr,
+            isJson,
+            isBinary: false,
+            contentType
+          });
+        }
 
         addHistoryItem(method, fullTargetUrl, response.status, durationMs);
       }
@@ -474,7 +639,7 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
 
       let errorMsg = err.response?.data?.error || err.message || 'Không thể kết nối đến máy chủ';
       if (runnerMode === 'direct' && err.message?.includes('Failed to fetch')) {
-        errorMsg += '\n\n💡 LƯU Ý: Yêu cầu bị chặn bởi chính sách CORS của trình duyệt. Vui lòng chuyển sang chế độ "Proxy Server (Bỏ qua CORS)" ở thanh công cụ phía trên để gọi được mọi API.';
+        errorMsg += '\n\n💡 LƯU Ý: Yêu cầu bị chặn bởi chính sách CORS của trình duyệt. Vui lòng chuyển sang chế độ "Proxy BE (Không sợ CORS)" ở thanh công cụ phía trên để gọi được mọi API.';
       }
 
       setResponseResult({
@@ -518,16 +683,20 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
 
   // Download Response
   const handleDownloadResponse = () => {
-    if (!responseResult?.rawBody && !responseResult?.body) return;
+    if (!responseResult) return;
+    if (responseResult.isBinary && responseResult.base64Data) {
+      downloadBase64File(
+        responseResult.base64Data,
+        responseResult.fileName || `download_${Date.now()}`,
+        responseResult.contentType || 'application/octet-stream'
+      );
+      return;
+    }
+    if (!responseResult.rawBody && !responseResult.body) return;
     const text = responseResult.rawBody || (typeof responseResult.body === 'object' ? JSON.stringify(responseResult.body, null, 2) : String(responseResult.body));
-    const blob = new Blob([text], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `response_${endpoint.method}_${Date.now()}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-    toast.success('Đã tải xuống file phản hồi!');
+    const mime = responseResult.contentType || 'application/json';
+    const ext = mime.includes('json') ? 'json' : mime.includes('xml') ? 'xml' : mime.includes('html') ? 'html' : 'txt';
+    downloadTextFile(text, `response_${endpoint.method}_${Date.now()}.${ext}`, mime);
   };
 
   // Save Response as Example to Endpoint Spec
@@ -595,6 +764,23 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
             </select>
           </div>
 
+          {/* Quick Environment & Variables Manager button */}
+          {onOpenEnvironments && (
+            <button
+              onClick={onOpenEnvironments}
+              title="Quản lý Môi trường & Biến (Environments & Variables CRUD)"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-muted/60 hover:bg-muted text-foreground border border-border transition-colors font-medium text-xs shrink-0"
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5 text-primary" />
+              <span>Biến MT</span>
+              {activeEnv?.variables && activeEnv.variables.length > 0 && (
+                <span className="px-1.5 py-0.2 rounded-full bg-primary/20 text-primary font-bold text-[10px]">
+                  {activeEnv.variables.filter(v => v.enabled).length}
+                </span>
+              )}
+            </button>
+          )}
+
           {/* Custom Base URL if selected */}
           {(!activeEnv || activeEnv.id === 'custom') && (
             <input
@@ -635,6 +821,18 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
 
         {/* Action Controls */}
         <div className="flex items-center gap-2">
+          {/* Delete Request Button */}
+          {onDeleteEndpoint && (
+            <button
+              onClick={() => onDeleteEndpoint(endpoint)}
+              title="Xóa Endpoint / Request này"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 border border-red-500/20 transition-colors font-medium text-xs shrink-0"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Xóa request</span>
+            </button>
+          )}
+
           <button
             onClick={resetFromEndpoint}
             title="Khôi phục lại toàn bộ thông số mặc định từ đặc tả"
@@ -682,14 +880,14 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
 
           {/* Full Target URL Input Bar */}
           <div className="flex-1 flex items-center bg-muted/40 border border-border focus-within:border-primary focus-within:ring-1 focus-within:ring-primary rounded-xl px-3.5 h-11 transition-all min-w-0">
-            <span className="text-muted-foreground font-mono text-xs select-none pr-1 truncate hidden md:inline-block max-w-[200px]">
+            <span className="text-muted-foreground font-mono text-xs select-none pr-1 truncate hidden md:inline-block max-w-[200px]" title={activeEnv?.url || customBaseUrl || 'https://api.internal.domain'}>
               {activeEnv?.url || customBaseUrl || 'https://api.internal.domain'}
             </span>
             <input
               type="text"
               value={path}
               onChange={e => setPath(e.target.value)}
-              placeholder="/api/v1/resource/{id}"
+              placeholder="/api/v1/resource/{{id}}"
               className="flex-1 bg-transparent font-mono text-xs sm:text-sm text-foreground focus:outline-none min-w-0 font-semibold"
             />
             {queryParamString && (
@@ -699,27 +897,72 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
             )}
           </div>
 
-          {/* Send Button */}
-          <button
-            onClick={handleSendRequest}
-            disabled={isLoading}
-            className="h-11 px-6 rounded-xl font-bold text-xs bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white shadow-md hover:shadow-lg disabled:opacity-60 transition-all flex items-center justify-center gap-2 shrink-0 select-none active:scale-98"
-          >
-            {isLoading ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span>Đang gửi...</span>
-              </>
-            ) : (
-              <>
-                <Send className="w-4 h-4" />
-                <span>Send</span>
-                <kbd className="hidden sm:inline-block px-1.5 py-0.5 text-[10px] bg-white/20 rounded font-mono text-white/90">
-                  Ctrl+↵
-                </kbd>
-              </>
+          {/* Split Send Button with Arrow Down */}
+          <div className="relative inline-flex items-stretch rounded-xl shadow-md shrink-0 select-none" ref={sendDropdownRef}>
+            <button
+              onClick={() => handleSendRequest(false)}
+              disabled={isLoading}
+              className="h-11 px-5 rounded-l-xl font-bold text-xs bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white disabled:opacity-60 transition-all flex items-center justify-center gap-2 active:scale-98"
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Đang gửi...</span>
+                </>
+              ) : (
+                <>
+                  <Send className="w-4 h-4" />
+                  <span>Send</span>
+                  <kbd className="hidden sm:inline-block px-1.5 py-0.5 text-[10px] bg-white/20 rounded font-mono text-white/90">
+                    Ctrl+↵
+                  </kbd>
+                </>
+              )}
+            </button>
+            <button
+              onClick={() => setIsSendDropdownOpen(!isSendDropdownOpen)}
+              disabled={isLoading}
+              className="h-11 px-2.5 rounded-r-xl border-l border-white/20 bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-60 transition-all flex items-center justify-center cursor-pointer"
+              title="Tùy chọn gửi và tải file (Send and Download)"
+            >
+              <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${isSendDropdownOpen ? 'rotate-180' : ''}`} />
+            </button>
+
+            {/* Split Dropdown Menu */}
+            {isSendDropdownOpen && (
+              <div className="absolute right-0 top-full mt-1.5 w-64 bg-card border border-border rounded-xl shadow-2xl z-30 py-1 text-xs animate-in fade-in zoom-in-95">
+                <button
+                  onClick={() => {
+                    setIsSendDropdownOpen(false);
+                    handleSendRequest(false);
+                  }}
+                  className="w-full px-3 py-2 text-left hover:bg-muted flex items-start gap-2.5 transition-colors cursor-pointer"
+                >
+                  <Send className="w-4 h-4 text-blue-500 mt-0.5 shrink-0" />
+                  <div>
+                    <div className="font-bold text-foreground">Send</div>
+                    <div className="text-[11px] text-muted-foreground">Gửi request và hiển thị kết quả (Ctrl+↵)</div>
+                  </div>
+                </button>
+                <button
+                  onClick={() => {
+                    setIsSendDropdownOpen(false);
+                    handleSendRequest(true);
+                  }}
+                  className="w-full px-3 py-2 text-left hover:bg-muted flex items-start gap-2.5 transition-colors border-t border-border/50 cursor-pointer"
+                >
+                  <Download className="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" />
+                  <div>
+                    <div className="font-bold text-foreground flex items-center gap-1.5">
+                      <span>Send and Download</span>
+                      <span className="px-1.5 py-0.2 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] rounded font-semibold">Tải file</span>
+                    </div>
+                    <div className="text-[11px] text-muted-foreground">Gửi request và tự động tải file phản hồi về máy</div>
+                  </div>
+                </button>
+              </div>
             )}
-          </button>
+          </div>
         </div>
 
         {/* Resolved Path Variables inline hint if any */}
@@ -736,6 +979,23 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
               </span>
             ))}
             <span className="text-xs text-muted-foreground/60">(chỉnh sửa ở tab "Path Vars" bên dưới)</span>
+          </div>
+        )}
+
+        {/* Active Environment Variables hint pills */}
+        {activeEnv?.variables && activeEnv.variables.length > 0 && (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+            <span className="font-semibold text-foreground flex items-center gap-1">
+              <SlidersHorizontal className="w-3 h-3 text-primary" /> Biến MT:
+            </span>
+            {activeEnv.variables.filter(v => v.enabled).slice(0, 5).map(v => (
+              <span key={v.key} className="inline-flex items-center gap-1 bg-muted/50 px-1.5 py-0.5 rounded font-mono text-[10px] border border-border/60" title={`{{${v.key}}} = ${v.value}`}>
+                <span className="text-primary font-bold">{`{{${v.key}}}`}</span>
+              </span>
+            ))}
+            {activeEnv.variables.filter(v => v.enabled).length > 5 && (
+              <span className="text-[10px] text-muted-foreground font-semibold">+{activeEnv.variables.filter(v => v.enabled).length - 5} biến khác</span>
+            )}
           </div>
         )}
       </div>
@@ -858,8 +1118,8 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
                     </thead>
                     <tbody className="divide-y divide-border">
                       {queryParams.map((qp, idx) => (
-                        <tr key={qp.id} className="hover:bg-muted/20">
-                          <td className="py-1 px-3 text-center">
+                        <tr key={qp.id} className="hover:bg-muted/20 transition-colors">
+                          <td className="py-2 px-3 text-center">
                             <input
                               type="checkbox"
                               checked={qp.enabled}
@@ -868,10 +1128,10 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
                                 next[idx].enabled = e.target.checked;
                                 setQueryParams(next);
                               }}
-                              className="rounded border-border text-primary focus:ring-primary cursor-pointer"
+                              className="rounded border-border text-primary focus:ring-primary/20 w-4 h-4 cursor-pointer"
                             />
                           </td>
-                          <td className="py-1 px-3">
+                          <td className="py-2 px-2">
                             <input
                               type="text"
                               value={qp.key}
@@ -880,11 +1140,11 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
                                 next[idx].key = e.target.value;
                                 setQueryParams(next);
                               }}
-                              placeholder="key"
-                              className="w-full bg-transparent font-mono focus:outline-none text-foreground placeholder:text-muted-foreground/40 font-semibold"
+                              placeholder="key (hỗ trợ {{biến}})"
+                              className="w-full px-2.5 py-1.5 bg-background border border-border/80 focus:border-primary focus:ring-1 focus:ring-primary/20 rounded-lg font-mono text-xs text-foreground placeholder:text-muted-foreground/40 transition-all font-semibold"
                             />
                           </td>
-                          <td className="py-1 px-3">
+                          <td className="py-2 px-2">
                             <input
                               type="text"
                               value={qp.value}
@@ -893,11 +1153,11 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
                                 next[idx].value = e.target.value;
                                 setQueryParams(next);
                               }}
-                              placeholder="value"
-                              className="w-full bg-transparent font-mono focus:outline-none text-foreground placeholder:text-muted-foreground/40"
+                              placeholder="value (hỗ trợ {{biến}})"
+                              className="w-full px-2.5 py-1.5 bg-background border border-border/80 focus:border-primary focus:ring-1 focus:ring-primary/20 rounded-lg font-mono text-xs text-foreground placeholder:text-muted-foreground/40 transition-all"
                             />
                           </td>
-                          <td className="py-1 px-3">
+                          <td className="py-2 px-2">
                             <input
                               type="text"
                               value={qp.description || ''}
@@ -906,16 +1166,17 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
                                 next[idx].description = e.target.value;
                                 setQueryParams(next);
                               }}
-                              placeholder="Mô tả..."
-                              className="w-full bg-transparent focus:outline-none text-muted-foreground placeholder:text-muted-foreground/30 text-[11px]"
+                              placeholder="Mô tả tham số..."
+                              className="w-full px-2.5 py-1.5 bg-background border border-border/80 focus:border-primary focus:ring-1 focus:ring-primary/20 rounded-lg text-xs text-muted-foreground placeholder:text-muted-foreground/30 transition-all"
                             />
                           </td>
-                          <td className="py-1 px-3 text-center">
+                          <td className="py-2 px-3 text-center">
                             <button
                               onClick={() => {
                                 setQueryParams(prev => prev.filter((_, i) => i !== idx));
                               }}
-                              className="p-1 text-muted-foreground hover:text-red-500 rounded transition-colors"
+                              className="p-1.5 text-muted-foreground hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-colors"
+                              title="Xóa tham số"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
@@ -946,11 +1207,11 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
                     </thead>
                     <tbody className="divide-y divide-border">
                       {pathVariables.map((pv, idx) => (
-                        <tr key={pv.name} className="hover:bg-muted/20">
-                          <td className="py-1.5 px-3 font-mono font-bold text-primary">
+                        <tr key={pv.name} className="hover:bg-muted/20 transition-colors">
+                          <td className="py-2 px-3 font-mono font-bold text-primary">
                             :{pv.name}
                           </td>
-                          <td className="py-1.5 px-3">
+                          <td className="py-2 px-2">
                             <input
                               type="text"
                               value={pv.value}
@@ -959,11 +1220,11 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
                                 next[idx].value = e.target.value;
                                 setPathVariables(next);
                               }}
-                              placeholder={`Nhập ${pv.name}...`}
-                              className="w-full px-2 py-1 bg-muted/40 border border-border rounded-lg font-mono focus:outline-none focus:ring-1 focus:ring-primary text-foreground font-semibold"
+                              placeholder={`Nhập ${pv.name} (hỗ trợ {{biến}})...`}
+                              className="w-full px-2.5 py-1.5 bg-background border border-border/80 rounded-lg font-mono text-xs focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 text-foreground font-semibold transition-all"
                             />
                           </td>
-                          <td className="py-1.5 px-3 text-muted-foreground text-[11px]">
+                          <td className="py-2 px-3 text-muted-foreground text-[11px]">
                             {pv.description || 'Tham số ID trên URL'}
                           </td>
                         </tr>
@@ -1029,8 +1290,8 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
                     </thead>
                     <tbody className="divide-y divide-border">
                       {headers.map((h, idx) => (
-                        <tr key={h.id} className="hover:bg-muted/20">
-                          <td className="py-1 px-3 text-center">
+                        <tr key={h.id} className="hover:bg-muted/20 transition-colors">
+                          <td className="py-2 px-3 text-center">
                             <input
                               type="checkbox"
                               checked={h.enabled}
@@ -1039,10 +1300,10 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
                                 next[idx].enabled = e.target.checked;
                                 setHeaders(next);
                               }}
-                              className="rounded border-border text-primary focus:ring-primary cursor-pointer"
+                              className="rounded border-border text-primary focus:ring-primary/20 w-4 h-4 cursor-pointer"
                             />
                           </td>
-                          <td className="py-1 px-3">
+                          <td className="py-2 px-2">
                             <input
                               type="text"
                               value={h.key}
@@ -1052,10 +1313,10 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
                                 setHeaders(next);
                               }}
                               placeholder="Header-Name"
-                              className="w-full bg-transparent font-mono focus:outline-none text-foreground placeholder:text-muted-foreground/40 font-semibold"
+                              className="w-full px-2.5 py-1.5 bg-background border border-border/80 focus:border-primary focus:ring-1 focus:ring-primary/20 rounded-lg font-mono text-xs text-foreground placeholder:text-muted-foreground/40 transition-all font-semibold"
                             />
                           </td>
-                          <td className="py-1 px-3">
+                          <td className="py-2 px-2">
                             <input
                               type="text"
                               value={h.value}
@@ -1064,11 +1325,11 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
                                 next[idx].value = e.target.value;
                                 setHeaders(next);
                               }}
-                              placeholder="value"
-                              className="w-full bg-transparent font-mono focus:outline-none text-foreground placeholder:text-muted-foreground/40"
+                              placeholder="value (hỗ trợ {{biến}})"
+                              className="w-full px-2.5 py-1.5 bg-background border border-border/80 focus:border-primary focus:ring-1 focus:ring-primary/20 rounded-lg font-mono text-xs text-foreground placeholder:text-muted-foreground/40 transition-all"
                             />
                           </td>
-                          <td className="py-1 px-3">
+                          <td className="py-2 px-2">
                             <input
                               type="text"
                               value={h.description || ''}
@@ -1078,15 +1339,16 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
                                 setHeaders(next);
                               }}
                               placeholder="Mô tả..."
-                              className="w-full bg-transparent focus:outline-none text-muted-foreground placeholder:text-muted-foreground/30 text-[11px]"
+                              className="w-full px-2.5 py-1.5 bg-background border border-border/80 focus:border-primary focus:ring-1 focus:ring-primary/20 rounded-lg text-xs text-muted-foreground placeholder:text-muted-foreground/30 transition-all"
                             />
                           </td>
-                          <td className="py-1 px-3 text-center">
+                          <td className="py-2 px-3 text-center">
                             <button
                               onClick={() => {
                                 setHeaders(prev => prev.filter((_, i) => i !== idx));
                               }}
-                              className="p-1 text-muted-foreground hover:text-red-500 rounded transition-colors"
+                              className="p-1.5 text-muted-foreground hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-colors"
+                              title="Xóa header"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
@@ -1318,24 +1580,37 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
                       value={jsonBody}
                       onChange={e => setJsonBody(e.target.value)}
                       placeholder='{\n  "key": "value"\n}'
-                      className="w-full flex-1 p-3 font-mono text-xs bg-slate-950 text-slate-100 rounded-xl border border-border focus:outline-none focus:ring-1 focus:ring-primary resize-none shadow-inner leading-relaxed"
+                      className="w-full flex-1 p-3.5 font-mono text-xs bg-background dark:bg-slate-950 text-foreground dark:text-slate-100 rounded-xl border border-border focus:outline-none focus:ring-1 focus:ring-primary resize-none shadow-xs leading-relaxed"
                     />
-                    {!jsonValidity.isValid && (
-                      <div className="mt-1 flex items-center gap-1.5 text-red-500 text-[11px] font-mono">
-                        <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                        <span className="truncate">Cú pháp JSON lỗi: {jsonValidity.error}</span>
-                      </div>
-                    )}
+                    <div className="mt-1 flex items-center justify-between text-[11px]">
+                      {!jsonValidity.isValid ? (
+                        <div className="flex items-center gap-1.5 text-red-500 font-mono">
+                          <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                          <span className="truncate">Cú pháp JSON lỗi: {jsonValidity.error}</span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1.5 text-muted-foreground">
+                          <Info className="w-3.5 h-3.5 text-primary shrink-0" />
+                          <span>Hỗ trợ cú pháp biến <code className="text-primary font-bold">{'{{tên_biến}}'}</code> tự động nạp từ Môi trường</span>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
 
                 {bodyType === 'raw' && (
-                  <textarea
-                    value={rawTextBody}
-                    onChange={e => setRawTextBody(e.target.value)}
-                    placeholder="Nhập nội dung văn bản thuần..."
-                    className="w-full flex-1 p-3 font-mono text-xs bg-slate-950 text-slate-100 rounded-xl border border-border focus:outline-none focus:ring-1 focus:ring-primary resize-none"
-                  />
+                  <div className="flex-1 flex flex-col min-h-0 relative">
+                    <textarea
+                      value={rawTextBody}
+                      onChange={e => setRawTextBody(e.target.value)}
+                      placeholder="Nhập nội dung văn bản thuần (hỗ trợ {{biến}})..."
+                      className="w-full flex-1 p-3.5 font-mono text-xs bg-background dark:bg-slate-950 text-foreground dark:text-slate-100 rounded-xl border border-border focus:outline-none focus:ring-1 focus:ring-primary resize-none shadow-xs leading-relaxed"
+                    />
+                    <div className="mt-1 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                      <Info className="w-3.5 h-3.5 text-primary shrink-0" />
+                      <span>Hỗ trợ cú pháp biến <code className="text-primary font-bold">{'{{tên_biến}}'}</code></span>
+                    </div>
+                  </div>
                 )}
 
                 {bodyType === 'none' && (
@@ -1515,13 +1790,84 @@ export const ApiPostmanTester: React.FC<ApiPostmanTesterProps> = ({
 
                   {/* Body Content */}
                   {activeRespTab === 'body' && (
-                    <div className="flex-1 overflow-auto p-4 bg-slate-950 text-slate-100 font-mono text-xs leading-relaxed select-text scrollbar-thin">
-                      <pre className="whitespace-pre-wrap break-all">
-                        {bodyViewFormat === 'pretty' && responseResult.isJson
-                          ? JSON.stringify(responseResult.body, null, 2)
-                          : responseResult.rawBody || JSON.stringify(responseResult.body, null, 2)}
-                      </pre>
-                    </div>
+                    responseResult.isBinary ? (
+                      /* File / Binary Response View */
+                      <div className="flex-1 flex flex-col items-center justify-center p-6 bg-muted/10 overflow-y-auto">
+                        <div className="max-w-md w-full bg-card border border-border rounded-2xl p-6 shadow-sm flex flex-col items-center text-center">
+                          <div className="w-16 h-16 rounded-2xl bg-primary/10 text-primary flex items-center justify-center mb-4 shadow-2xs">
+                            {responseResult.contentType?.includes('image') ? (
+                              <FileImage className="w-8 h-8 text-blue-500" />
+                            ) : responseResult.contentType?.includes('pdf') ? (
+                              <FileText className="w-8 h-8 text-red-500" />
+                            ) : responseResult.contentType?.includes('sheet') || responseResult.contentType?.includes('excel') || responseResult.contentType?.includes('csv') ? (
+                              <FileSpreadsheet className="w-8 h-8 text-emerald-500" />
+                            ) : responseResult.contentType?.includes('zip') || responseResult.contentType?.includes('tar') || responseResult.contentType?.includes('compressed') ? (
+                              <FileArchive className="w-8 h-8 text-amber-500" />
+                            ) : (
+                              <HardDrive className="w-8 h-8 text-primary" />
+                            )}
+                          </div>
+
+                          <h3 className="font-bold text-sm text-foreground mb-1 font-mono break-all">
+                            {responseResult.fileName || 'Tệp nhị phân phản hồi'}
+                          </h3>
+                          
+                          <div className="flex flex-wrap items-center justify-center gap-2 text-xs text-muted-foreground mb-4">
+                            <span className="px-2 py-0.5 rounded-md bg-muted font-mono text-[11px] border border-border/60">
+                              {responseResult.contentType || 'application/octet-stream'}
+                            </span>
+                            <span>•</span>
+                            <span className="font-semibold text-foreground">
+                              {formatBytes(responseResult.sizeBytes)}
+                            </span>
+                          </div>
+
+                          {/* Image preview if image MIME */}
+                          {responseResult.contentType?.startsWith('image/') && responseResult.base64Data && (
+                            <div className="mb-4 max-w-full max-h-56 overflow-hidden rounded-xl border border-border bg-muted/20 p-2 flex items-center justify-center">
+                              <img
+                                src={`data:${responseResult.contentType};base64,${responseResult.base64Data}`}
+                                alt={responseResult.fileName || 'Preview'}
+                                className="max-h-48 object-contain rounded-lg"
+                              />
+                            </div>
+                          )}
+
+                          <button
+                            onClick={() => {
+                              if (responseResult.base64Data) {
+                                downloadBase64File(
+                                  responseResult.base64Data,
+                                  responseResult.fileName || `file_${Date.now()}`,
+                                  responseResult.contentType || 'application/octet-stream'
+                                );
+                              } else {
+                                handleDownloadResponse();
+                              }
+                            }}
+                            className="w-full py-2.5 px-4 rounded-xl font-bold text-xs bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm hover:shadow transition-all flex items-center justify-center gap-2 active:scale-98 cursor-pointer"
+                          >
+                            <Download className="w-4 h-4" />
+                            <span>Tải tệp về máy ({formatBytes(responseResult.sizeBytes)})</span>
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      /* Text / JSON Response View - Theme Aware */
+                      <div className="flex-1 overflow-auto p-4 bg-muted/20 dark:bg-slate-950 text-foreground dark:text-slate-100 font-mono text-xs leading-relaxed select-text scrollbar-thin">
+                        <pre className="whitespace-pre-wrap break-all">
+                          {(() => {
+                            const fullText = bodyViewFormat === 'pretty' && responseResult.isJson
+                              ? JSON.stringify(responseResult.body, null, 2)
+                              : responseResult.rawBody || (typeof responseResult.body === 'object' ? JSON.stringify(responseResult.body, null, 2) : String(responseResult.body || ''));
+                            if (!responseSearchTerm.trim()) return fullText;
+                            const lines = fullText.split('\n');
+                            const matched = lines.filter(l => l.toLowerCase().includes(responseSearchTerm.toLowerCase()));
+                            return matched.length > 0 ? matched.join('\n') : `(Không tìm thấy dòng nào khớp với từ khóa "${responseSearchTerm}")`;
+                          })()}
+                        </pre>
+                      </div>
+                    )
                   )}
 
                   {/* Headers Content */}

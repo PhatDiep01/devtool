@@ -13,7 +13,10 @@ import {
   Upload, 
   Filter, 
   X,
-  Code2
+  Code2,
+  Trash2,
+  Copy,
+  Globe
 } from 'lucide-react';
 import { ApiEndpoint, Module } from '@/types';
 import { ApiMethodBadge } from './ApiMethodBadge';
@@ -30,6 +33,10 @@ interface ApiSidebarTreeProps {
   onOpenErrorCodes: () => void;
   onOpenImportExport: () => void;
   onOpenSearchPalette: () => void;
+  onOpenEnvironments?: () => void;
+  onDeleteEndpoint?: (endpoint: ApiEndpoint) => void;
+  onDuplicateEndpoint?: (endpoint: ApiEndpoint) => void;
+  onTogglePinEndpoint?: (endpoint: ApiEndpoint) => void;
 }
 
 export const ApiSidebarTree: React.FC<ApiSidebarTreeProps> = ({
@@ -43,7 +50,11 @@ export const ApiSidebarTree: React.FC<ApiSidebarTreeProps> = ({
   onOpenModels,
   onOpenErrorCodes,
   onOpenImportExport,
-  onOpenSearchPalette
+  onOpenSearchPalette,
+  onOpenEnvironments,
+  onDeleteEndpoint,
+  onDuplicateEndpoint,
+  onTogglePinEndpoint
 }) => {
   // Quick filters
   const [filterText, setFilterText] = useState('');
@@ -51,14 +62,29 @@ export const ApiSidebarTree: React.FC<ApiSidebarTreeProps> = ({
   const [selectedStatus, setSelectedStatus] = useState<string>('all');
   const [selectedVersion, setSelectedVersion] = useState<string>('all');
 
-  // Collapsed folders state (persisted in local state)
+  // Collapsed folders state (default: all collapsed)
   const [openFolders, setOpenFolders] = useState<Record<string, boolean>>({});
 
   const toggleFolder = (folderName: string) => {
-    setOpenFolders(prev => ({
-      ...prev,
-      [folderName]: prev[folderName] === undefined ? false : !prev[folderName]
-    }));
+    setOpenFolders(prev => {
+      const isCurrentlyOpen = Boolean(prev[folderName]) || (Boolean(filterText.trim()) && Boolean(folderGroups[folderName]?.length));
+      return {
+        ...prev,
+        [folderName]: !isCurrentlyOpen
+      };
+    });
+  };
+
+  const handleExpandAll = () => {
+    const next: Record<string, boolean> = {};
+    Object.keys(folderGroups).forEach(f => {
+      next[f] = true;
+    });
+    setOpenFolders(next);
+  };
+
+  const handleCollapseAll = () => {
+    setOpenFolders({});
   };
 
   // Distinct versions available
@@ -131,32 +157,48 @@ export const ApiSidebarTree: React.FC<ApiSidebarTreeProps> = ({
         <div className="grid grid-cols-2 gap-1.5">
           <button
             onClick={onOpenCreate}
-            className="py-1.5 px-2.5 rounded-lg bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center gap-1 shadow-sm hover:opacity-90 transition-opacity"
+            className="py-1.5 px-2.5 rounded-xl bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm hover:opacity-90 transition"
           >
             <Plus className="w-3.5 h-3.5" /> Thêm API
           </button>
           <button
             onClick={onOpenImportExport}
-            className="py-1.5 px-2 rounded-lg bg-muted hover:bg-muted/80 text-foreground border border-border text-xs font-semibold flex items-center justify-center gap-1 transition-colors"
+            className="py-1.5 px-2 rounded-xl bg-card hover:bg-muted text-foreground border border-border text-xs font-bold flex items-center justify-center gap-1 shadow-xs transition truncate"
+            title="Nhập Swagger, OpenAPI, Postman JSON hoặc xuất tài liệu"
           >
-            <Upload className="w-3.5 h-3.5" /> Nhập / Xuất
+            <Upload className="w-3.5 h-3.5 text-primary shrink-0" />
+            <span className="truncate">Nhập Swagger/JSON</span>
           </button>
         </div>
 
-        {/* Sub-tools pills: Models & Mã lỗi */}
-        <div className="flex items-center gap-1.5">
+        {/* Sub-tools pills: Schemas, Mã lỗi, Quản lý Môi trường */}
+        <div className="grid grid-cols-3 gap-1">
           <button
             onClick={onOpenModels}
-            className="flex-1 py-1 px-2 rounded-md bg-muted/50 hover:bg-muted text-muted-foreground hover:text-foreground text-[11px] font-medium flex items-center justify-center gap-1 border border-border/60 transition-colors"
+            className="py-1 px-1.5 rounded-lg bg-card hover:bg-muted text-muted-foreground hover:text-foreground text-[10px] font-semibold flex items-center justify-center gap-1 border border-border transition truncate"
+            title="Bảng cấu trúc Dữ liệu / Schemas"
           >
-            <Database className="w-3 h-3 text-primary" /> Schemas
+            <Database className="w-3 h-3 text-blue-500 shrink-0" />
+            <span className="truncate">Schemas</span>
           </button>
           <button
             onClick={onOpenErrorCodes}
-            className="flex-1 py-1 px-2 rounded-md bg-muted/50 hover:bg-muted text-muted-foreground hover:text-foreground text-[11px] font-medium flex items-center justify-center gap-1 border border-border/60 transition-colors"
+            className="py-1 px-1.5 rounded-lg bg-card hover:bg-muted text-muted-foreground hover:text-foreground text-[10px] font-semibold flex items-center justify-center gap-1 border border-border transition truncate"
+            title="Bảng Mã Lỗi Chung Của Hệ Thống"
           >
-            <AlertOctagon className="w-3 h-3 text-amber-500" /> Bảng mã lỗi
+            <AlertOctagon className="w-3 h-3 text-amber-500 shrink-0" />
+            <span className="truncate">Mã lỗi</span>
           </button>
+          {onOpenEnvironments && (
+            <button
+              onClick={onOpenEnvironments}
+              className="py-1 px-1.5 rounded-lg bg-card hover:bg-muted text-muted-foreground hover:text-foreground text-[10px] font-semibold flex items-center justify-center gap-1 border border-border transition truncate"
+              title="Quản lý Môi trường & Biến (Environments)"
+            >
+              <Globe className="w-3 h-3 text-emerald-500 shrink-0" />
+              <span className="truncate">Biến MT</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -234,14 +276,45 @@ export const ApiSidebarTree: React.FC<ApiSidebarTreeProps> = ({
                   <div
                     key={ep.id}
                     onClick={() => onSelectEndpoint(ep)}
-                    className={`flex items-center gap-2 p-2 rounded-lg cursor-pointer text-xs transition-colors ${
+                    className={`flex items-center justify-between gap-1.5 p-2 rounded-xl cursor-pointer text-xs transition-colors group ${
                       isSelected 
                         ? 'bg-primary/15 text-primary font-semibold' 
                         : 'hover:bg-muted/40 text-foreground'
                     }`}
                   >
-                    <ApiMethodBadge method={ep.method} size="sm" />
-                    <span className="font-mono truncate flex-1 text-[11px]">{ep.path}</span>
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <ApiMethodBadge method={ep.method} size="sm" />
+                      <span className="font-mono truncate flex-1 text-[11px]">{ep.path}</span>
+                    </div>
+
+                    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                      {onTogglePinEndpoint && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onTogglePinEndpoint(ep);
+                          }}
+                          className="p-1 rounded hover:bg-muted text-amber-500 hover:text-amber-600 transition"
+                          title="Bỏ ghim"
+                        >
+                          <Pin className="w-3 h-3 fill-current" />
+                        </button>
+                      )}
+                      {onDeleteEndpoint && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onDeleteEndpoint(ep);
+                          }}
+                          className="p-1 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition"
+                          title="Xóa endpoint này"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
                   </div>
                 );
               })}
@@ -268,22 +341,49 @@ export const ApiSidebarTree: React.FC<ApiSidebarTreeProps> = ({
             )}
           </div>
         ) : (
-          Object.entries(folderGroups).map(([folderName, eps]) => {
-            const isOpen = openFolders[folderName] !== false; // default open
-            return (
-              <div key={folderName} className="space-y-0.5">
-                {/* Folder Header */}
-                <div
-                  onClick={() => toggleFolder(folderName)}
-                  className="flex items-center justify-between p-1.5 rounded-lg hover:bg-muted/50 cursor-pointer text-xs font-semibold text-muted-foreground group"
-                >
-                  <div className="flex items-center gap-1.5 truncate">
-                    {isOpen ? <ChevronDown className="w-3.5 h-3.5 shrink-0" /> : <ChevronRight className="w-3.5 h-3.5 shrink-0" />}
-                    {isOpen ? <FolderOpen className="w-3.5 h-3.5 text-primary shrink-0" /> : <Folder className="w-3.5 h-3.5 shrink-0" />}
-                    <span className="truncate text-foreground text-xs">{folderName}</span>
-                  </div>
-                  <span className="text-[10px] px-1.5 rounded-full bg-muted font-mono">{eps.length}</span>
+          <div className="space-y-1.5">
+            {/* Quick action toolbar for folders: Expand / Collapse All */}
+            {Object.keys(folderGroups).length > 1 && (
+              <div className="flex items-center justify-between px-2 pt-0.5 pb-0.5 text-[10px] text-muted-foreground font-semibold">
+                <span>Danh mục ({Object.keys(folderGroups).length})</span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={handleExpandAll}
+                    className="hover:text-primary transition-colors cursor-pointer"
+                    title="Mở rộng tất cả danh mục"
+                  >
+                    Mở tất cả
+                  </button>
+                  <span>•</span>
+                  <button
+                    type="button"
+                    onClick={handleCollapseAll}
+                    className="hover:text-primary transition-colors cursor-pointer"
+                    title="Thu gọn tất cả danh mục"
+                  >
+                    Đóng tất cả
+                  </button>
                 </div>
+              </div>
+            )}
+
+            {Object.entries(folderGroups).map(([folderName, eps]) => {
+              const isOpen = Boolean(openFolders[folderName]) || (Boolean(filterText.trim()) && eps.length > 0);
+              return (
+                <div key={folderName} className="space-y-0.5">
+                  {/* Folder Header */}
+                  <div
+                    onClick={() => toggleFolder(folderName)}
+                    className="flex items-center justify-between p-1.5 rounded-lg hover:bg-muted/50 cursor-pointer text-xs font-semibold text-muted-foreground group"
+                  >
+                    <div className="flex items-center gap-1.5 truncate">
+                      {isOpen ? <ChevronDown className="w-3.5 h-3.5 shrink-0" /> : <ChevronRight className="w-3.5 h-3.5 shrink-0" />}
+                      {isOpen ? <FolderOpen className="w-3.5 h-3.5 text-primary shrink-0" /> : <Folder className="w-3.5 h-3.5 shrink-0" />}
+                      <span className="truncate text-foreground text-xs">{folderName}</span>
+                    </div>
+                    <span className="text-[10px] px-1.5 rounded-full bg-muted font-mono">{eps.length}</span>
+                  </div>
 
                 {/* Folder items */}
                 {isOpen && (
@@ -294,7 +394,7 @@ export const ApiSidebarTree: React.FC<ApiSidebarTreeProps> = ({
                         <div
                           key={ep.id}
                           onClick={() => onSelectEndpoint(ep)}
-                          className={`flex items-center justify-between gap-1.5 p-1.5 rounded-lg cursor-pointer text-xs transition-colors group ${
+                          className={`flex items-center justify-between gap-1.5 p-1.5 rounded-xl cursor-pointer text-xs transition-colors group relative ${
                             isSelected 
                               ? 'bg-primary/15 text-primary font-semibold' 
                               : 'hover:bg-muted/40 text-foreground'
@@ -313,6 +413,49 @@ export const ApiSidebarTree: React.FC<ApiSidebarTreeProps> = ({
                               Bỏ
                             </span>
                           )}
+
+                          {/* Quick Action buttons on hover */}
+                          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 ml-1">
+                            {onTogglePinEndpoint && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onTogglePinEndpoint(ep);
+                                }}
+                                className={`p-1 rounded hover:bg-muted transition ${ep.is_pinned ? 'text-amber-500' : 'text-muted-foreground hover:text-foreground'}`}
+                                title={ep.is_pinned ? 'Bỏ ghim' : 'Ghim lên đầu'}
+                              >
+                                <Pin className={`w-3 h-3 ${ep.is_pinned ? 'fill-current' : ''}`} />
+                              </button>
+                            )}
+                            {onDuplicateEndpoint && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onDuplicateEndpoint(ep);
+                                }}
+                                className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition"
+                                title="Nhân bản endpoint"
+                              >
+                                <Copy className="w-3 h-3" />
+                              </button>
+                            )}
+                            {onDeleteEndpoint && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onDeleteEndpoint(ep);
+                                }}
+                                className="p-1 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition"
+                                title="Xóa endpoint"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            )}
+                          </div>
                         </div>
                       );
                     })}
@@ -320,8 +463,9 @@ export const ApiSidebarTree: React.FC<ApiSidebarTreeProps> = ({
                 )}
               </div>
             );
-          })
-        )}
+          })}
+        </div>
+      )}
       </div>
 
       {/* 4. FOOTER STATS */}

@@ -23,7 +23,8 @@ import {
   ExternalLink,
   Tag,
   ShieldCheck,
-  Code2
+  Code2,
+  FileCode
 } from 'lucide-react';
 import { docsApi, bugsApi, stickyNotesApi, jiraApi } from '../../services/api';
 import { useJiraAuthStore } from '../../stores/jira-auth.store';
@@ -97,6 +98,16 @@ const APP_SCREENS: AppScreenItem[] = [
     keywords: ['bug', 'loi', 'tracker', 'quan ly bug', 'danh dau anh', 'fix', 'screenshot', 'bao cao bug']
   },
   {
+    id: 'docs-menu-acl',
+    title: 'Quản lý Menu & Phân quyền ACL Đa CSDL',
+    desc: 'Cấu hình cây Menu, Ma trận Action, bảo vệ Root DB và Thuật sĩ Đồng bộ an toàn',
+    path: '/docs/menu-acl',
+    icon: ShieldCheck,
+    badge: 'Mới',
+    category: 'Màn hình mô tả task',
+    keywords: ['menu', 'acl', 'phan quyen', 'da co so du lieu', 'sync wizard', 'root database', 'dong bo csdl', 'action', 'tree view', 'quan ly menu']
+  },
+  {
     id: 'jira-board',
     title: 'Kanban Board Jira',
     desc: 'Bảng kéo thả trực quan theo dõi tiến độ công việc và sprint',
@@ -145,6 +156,16 @@ const APP_SCREENS: AppScreenItem[] = [
     badge: 'Jira',
     category: 'Quản lý Jira',
     keywords: ['activity', 'stream', 'nhan su', 'nhat ky', 'tong hop', 'nhan vien']
+  },
+  {
+    id: 'tool-markdown-preview',
+    title: 'Xem trước Markdown (Markdown Preview)',
+    desc: 'Soạn thảo, tải file .md, xem trước định dạng trực quan và lưu trữ tài liệu',
+    path: '/tools/markdown-preview',
+    icon: FileCode,
+    badge: 'Mới',
+    category: 'Tiện ích',
+    keywords: ['markdown', 'preview', 'md', 'xem truoc', 'soan thao', 'tai lieu', 'editor', 'gfm', 'read', 'previewer']
   },
   {
     id: 'tool-crypto-identity',

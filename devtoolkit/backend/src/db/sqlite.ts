@@ -259,6 +259,31 @@ function runMigrations(database: any): void {
     CREATE INDEX IF NOT EXISTS idx_api_error_codes_code ON api_error_codes(code);
     CREATE INDEX IF NOT EXISTS idx_api_error_codes_http ON api_error_codes(http_status);
 
+    -- ACL Multi-Database Connections Table
+    CREATE TABLE IF NOT EXISTS acl_connections (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      server TEXT NOT NULL,
+      database TEXT NOT NULL,
+      auth_type TEXT DEFAULT 'windows',
+      username TEXT,
+      password TEXT,
+      is_root INTEGER DEFAULT 0,
+      encrypt INTEGER DEFAULT 0,
+      trust_server_certificate INTEGER DEFAULT 1,
+      timeout_seconds INTEGER DEFAULT 30,
+      hardware_fingerprint TEXT,
+      environment TEXT DEFAULT 'dev',
+      status TEXT DEFAULT 'unknown',
+      latency_ms INTEGER DEFAULT 0,
+      last_checked TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_acl_conn_is_root ON acl_connections(is_root);
+    CREATE INDEX IF NOT EXISTS idx_acl_conn_env ON acl_connections(environment);
+
     -- Seed essential modules
     INSERT OR IGNORE INTO modules (name, slug, icon, sort_order) VALUES ('Survey Management', 'survey-management', '📊', 1);
     INSERT OR IGNORE INTO modules (name, slug, icon, sort_order) VALUES ('General', 'general', '📁', 2);

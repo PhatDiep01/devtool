@@ -479,18 +479,26 @@ router.get('/modules/:slug/screens', (req: Request, res: Response) => {
   }
 });
 
-// GET /api/docs/screens/:id - Screen detail
+// GET /api/docs/screens/:id - Screen detail (supports ID or slug)
 router.get('/screens/:id', (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const db = getDb();
 
-    const screen: any = db.prepare(`
-      SELECT s.*, m.name as module_name, m.slug as module_slug, m.icon as module_icon, m.color as module_color
-      FROM screens s
-      JOIN modules m ON s.module_id = m.id
-      WHERE s.id = ?
-    `).get(id);
+    const isNumeric = /^\d+$/.test(id);
+    const screen: any = isNumeric
+      ? db.prepare(`
+          SELECT s.*, m.name as module_name, m.slug as module_slug, m.icon as module_icon, m.color as module_color
+          FROM screens s
+          JOIN modules m ON s.module_id = m.id
+          WHERE s.id = ?
+        `).get(Number(id))
+      : db.prepare(`
+          SELECT s.*, m.name as module_name, m.slug as module_slug, m.icon as module_icon, m.color as module_color
+          FROM screens s
+          JOIN modules m ON s.module_id = m.id
+          WHERE s.slug = ?
+        `).get(id);
 
     if (!screen) return res.status(404).json({ error: 'Screen document not found' });
 
@@ -503,7 +511,7 @@ router.get('/screens/:id', (req: Request, res: Response) => {
       FROM images
       WHERE screen_id = ?
       ORDER BY id DESC
-    `).all(id);
+    `).all(screen.id);
     screen.images = screenImages.map(img => ({
       ...img,
       url: `/api/files/images/${img.stored_name}`

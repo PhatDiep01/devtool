@@ -30,11 +30,14 @@ export const ApiImportExportModal: React.FC<ApiImportExportModalProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'import' | 'export'>('import');
   const [importType, setImportType] = useState<'openapi' | 'postman' | 'curl'>('openapi');
+  const [importSourceMode, setImportSourceMode] = useState<'paste_file' | 'url'>('paste_file');
   const [conflictStrategy, setConflictStrategy] = useState<'overwrite' | 'skip' | 'keep_both'>('overwrite');
 
   const [rawInput, setRawInput] = useState('');
+  const [remoteUrl, setRemoteUrl] = useState('');
   const [folderName, setFolderName] = useState('Chung');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [fetchingUrl, setFetchingUrl] = useState(false);
 
   // File Upload Handler
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -48,6 +51,24 @@ export const ApiImportExportModal: React.FC<ApiImportExportModalProps> = ({
       toast.success(`Đã nạp file ${file.name}`);
     };
     reader.readAsText(file);
+  };
+
+  const handleFetchRemoteUrl = async () => {
+    if (!remoteUrl.trim()) {
+      toast.error('Vui lòng nhập đường dẫn URL Swagger / OpenAPI');
+      return;
+    }
+    try {
+      setFetchingUrl(true);
+      const res = await apiDocsApi.fetchRemoteSpecUrl(remoteUrl.trim());
+      setRawInput(JSON.stringify(res.data, null, 2));
+      toast.success('Đã nạp thành công tài liệu từ URL!');
+      setImportSourceMode('paste_file');
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || err.message || 'Lỗi khi tải URL');
+    } finally {
+      setFetchingUrl(false);
+    }
   };
 
   const handleExecuteImport = async () => {
@@ -284,46 +305,103 @@ export const ApiImportExportModal: React.FC<ApiImportExportModalProps> = ({
                 </div>
               )}
 
-              {/* Paste or Upload Area */}
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="text-xs font-semibold text-muted-foreground">
-                    {importType === 'curl' ? 'Dán lệnh cURL vào đây:' : 'Dán chuỗi JSON hoặc tải file:'}
-                  </label>
-                  {importType !== 'curl' && (
-                    <label className="text-xs text-primary font-semibold hover:underline cursor-pointer">
-                      <span>Chọn file từ máy</span>
-                      <input type="file" accept=".json" onChange={handleFileUpload} className="hidden" />
-                    </label>
-                  )}
+              {/* Source Mode Toggle for OpenAPI */}
+              {importType === 'openapi' && (
+                <div className="flex items-center gap-2 border-b border-border/60 pb-2">
+                  <span className="text-xs font-semibold text-muted-foreground">Phương thức nạp:</span>
+                  <div className="flex gap-1 bg-muted/50 p-0.5 rounded-lg border border-border">
+                    <button
+                      type="button"
+                      onClick={() => setImportSourceMode('paste_file')}
+                      className={`px-3 py-1 rounded-md text-xs font-semibold transition ${
+                        importSourceMode === 'paste_file' ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'
+                      }`}
+                    >
+                      Dán JSON / Tải file
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setImportSourceMode('url')}
+                      className={`px-3 py-1 rounded-md text-xs font-semibold transition ${
+                        importSourceMode === 'url' ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'
+                      }`}
+                    >
+                      Nhập từ URL Swagger (.json)
+                    </button>
+                  </div>
                 </div>
+              )}
 
-                <textarea
-                  value={rawInput}
-                  onChange={e => setRawInput(e.target.value)}
-                  placeholder={
-                    importType === 'curl'
-                      ? 'curl -X POST https://api.internal.domain/api/v1/surveys -H "Authorization: Bearer <TOKEN>" -H "Content-Type: application/json" -d \'{"title": "Khảo sát"}\''
-                      : '{\n  "openapi": "3.0.3",\n  "paths": { ... }\n}'
-                  }
-                  rows={8}
-                  className="w-full p-3 text-xs font-mono bg-muted/20 border border-border rounded-xl focus:border-primary focus:outline-none leading-relaxed"
-                />
-              </div>
+              {/* URL Input if URL Mode */}
+              {importType === 'openapi' && importSourceMode === 'url' ? (
+                <div className="space-y-3 bg-muted/15 border border-border/80 rounded-2xl p-4">
+                  <label className="block text-xs font-bold text-foreground">
+                    Đường dẫn Swagger / OpenAPI JSON trực tuyến:
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="url"
+                      value={remoteUrl}
+                      onChange={e => setRemoteUrl(e.target.value)}
+                      placeholder="https://petstore.swagger.io/v2/swagger.json hoặc http://localhost:5000/swagger.json"
+                      className="flex-1 px-3.5 py-2 text-xs font-mono bg-background border border-border rounded-xl focus:outline-none focus:border-primary shadow-xs"
+                    />
+                    <button
+                      type="button"
+                      disabled={fetchingUrl}
+                      onClick={handleFetchRemoteUrl}
+                      className="px-4 py-2 bg-primary text-primary-foreground text-xs font-bold rounded-xl hover:opacity-90 disabled:opacity-50 transition shadow-xs flex items-center gap-1.5 shrink-0"
+                    >
+                      {fetchingUrl ? 'Đang nạp...' : 'Tải & Phân tích'}
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    Hỗ trợ các định dạng Swagger 2.0 và OpenAPI 3.0/3.1 (JSON format)
+                  </p>
+                </div>
+              ) : (
+                /* Paste or Upload Area */
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-semibold text-muted-foreground">
+                      {importType === 'curl' ? 'Dán lệnh cURL vào đây:' : 'Dán chuỗi JSON hoặc tải file:'}
+                    </label>
+                    {importType !== 'curl' && (
+                      <label className="inline-flex items-center gap-1.5 px-3 py-1 bg-primary/10 hover:bg-primary/20 text-primary text-xs font-bold rounded-lg border border-primary/20 cursor-pointer transition">
+                        <Upload className="w-3.5 h-3.5" />
+                        <span>Chọn file JSON từ máy</span>
+                        <input type="file" accept=".json" onChange={handleFileUpload} className="hidden" />
+                      </label>
+                    )}
+                  </div>
+
+                  <textarea
+                    value={rawInput}
+                    onChange={e => setRawInput(e.target.value)}
+                    placeholder={
+                      importType === 'curl'
+                        ? 'curl -X POST https://api.internal.domain/api/v1/surveys -H "Authorization: Bearer <TOKEN>" -H "Content-Type: application/json" -d \'{"title": "Khảo sát"}\''
+                        : '{\n  "openapi": "3.0.3",\n  "paths": { ... }\n}'
+                    }
+                    rows={8}
+                    className="w-full p-3.5 text-xs font-mono bg-background border border-border rounded-xl focus:border-primary focus:ring-1 focus:ring-primary focus:outline-none leading-relaxed shadow-xs"
+                  />
+                </div>
+              )}
 
               <div className="flex justify-end gap-2 pt-2">
                 <button
                   type="button"
                   onClick={onClose}
-                  className="px-4 py-2 text-xs text-muted-foreground hover:text-foreground border border-border rounded-xl"
+                  className="px-4 py-2 text-xs font-semibold text-muted-foreground hover:text-foreground border border-border rounded-xl hover:bg-muted transition"
                 >
                   Đóng
                 </button>
                 <button
                   type="button"
-                  disabled={isProcessing}
+                  disabled={isProcessing || !rawInput.trim()}
                   onClick={handleExecuteImport}
-                  className="inline-flex items-center gap-1.5 px-5 py-2 text-xs font-semibold bg-primary text-primary-foreground rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 px-5 py-2 text-xs font-bold bg-primary text-primary-foreground rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50 shadow-xs"
                 >
                   <Check className="w-4 h-4" />
                   {isProcessing ? 'Đang phân tích & nhập...' : 'Bắt đầu Nhập'}

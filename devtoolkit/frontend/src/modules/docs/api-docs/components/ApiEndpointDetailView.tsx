@@ -357,10 +357,10 @@ export const ApiEndpointDetailView: React.FC<ApiEndpointDetailViewProps> = ({
             </div>
 
             {/* Code Body */}
-            <div className="relative p-4 bg-slate-950 text-slate-100 font-mono text-xs overflow-x-auto scrollbar-thin">
+            <div className="relative p-4 bg-muted/40 dark:bg-slate-950 text-foreground dark:text-slate-100 border border-border rounded-xl font-mono text-xs overflow-x-auto scrollbar-thin">
               <button
                 onClick={() => handleCopyText(endpoint.request_bodies[activeReqSampleIdx]?.body || '', 'payload')}
-                className="absolute top-3 right-3 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-medium flex items-center gap-1"
+                className="absolute top-3 right-3 px-2 py-1 rounded-lg bg-card/90 hover:bg-card border border-border dark:bg-slate-800 dark:hover:bg-slate-700 text-foreground dark:text-slate-300 text-[11px] font-medium flex items-center gap-1 shadow-xs transition-colors"
               >
                 {copiedField === 'payload' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
                 Copy JSON
@@ -445,10 +445,10 @@ export const ApiEndpointDetailView: React.FC<ApiEndpointDetailViewProps> = ({
                       </div>
                     )}
 
-                    <div className="relative p-4 rounded-xl bg-slate-950 text-slate-100 font-mono text-xs overflow-x-auto scrollbar-thin">
+                    <div className="relative p-4 rounded-xl bg-muted/40 dark:bg-slate-950 text-foreground dark:text-slate-100 border border-border font-mono text-xs overflow-x-auto scrollbar-thin">
                       <button
                         onClick={() => handleCopyText(activeResponse.examples[activeRespSampleIdx]?.body || '', 'response')}
-                        className="absolute top-3 right-3 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-medium flex items-center gap-1"
+                        className="absolute top-3 right-3 px-2 py-1 rounded-lg bg-card/90 hover:bg-card border border-border dark:bg-slate-800 dark:hover:bg-slate-700 text-foreground dark:text-slate-300 text-[11px] font-medium flex items-center gap-1 shadow-xs transition-colors"
                       >
                         {copiedField === 'response' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
                         Copy JSON
