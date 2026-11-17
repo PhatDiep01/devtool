@@ -28,18 +28,13 @@ pnpm-debug.log*
 *.db.bak
 *.sqlite
 *.sqlite3
-data_docs_tooldev/*.db
-data_docs_tooldev/*.db-shm
-data_docs_tooldev/*.db-wal
-data_docs_tooldev/*.db-journal
-data_docs_tooldev/backups/*.bak
-data_docs_tooldev/backups/*.db*
 
 # ------------------------------------------------------------------------------
-# 3. User Private Data & Scratchpads (May contain internal passwords / links)
+# 3. Local Persistent Data (Strictly local, never commit/push to Git)
 # ------------------------------------------------------------------------------
-data_docs_tooldev/sticky_notes/
-data_docs_tooldev/bug_files/
+data_docs_tooldev/
+data/
+**/data_docs_tooldev/
 
 # ------------------------------------------------------------------------------
 # 4. Environment Variables & Secrets

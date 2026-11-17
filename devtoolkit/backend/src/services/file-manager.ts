@@ -1,6 +1,55 @@
 import fs from 'fs';
 import path from 'path';
 
+let cachedDataDir: string | null = null;
+
+/**
+ * Find the repository / workspace root by searching up from __dirname or cwd.
+ */
+export function getProjectRoot(): string {
+  // Check if cwd has .git or devtoolkit
+  if (fs.existsSync(path.join(process.cwd(), '.git')) || 
+      (fs.existsSync(path.join(process.cwd(), 'devtoolkit')) && fs.existsSync(path.join(process.cwd(), 'package.json')))) {
+    return process.cwd();
+  }
+
+  let current = __dirname;
+  for (let i = 0; i < 6; i++) {
+    if (fs.existsSync(path.join(current, '.git')) || 
+        (fs.existsSync(path.join(current, 'devtoolkit')) && !fs.existsSync(path.join(current, 'backend')))) {
+      return current;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+
+  return process.cwd();
+}
+
+/**
+ * Ensure required directory sub-structures exist under DATA_DIR.
+ */
+export function ensureDataStructure(targetDir: string): void {
+  fs.mkdirSync(targetDir, { recursive: true });
+
+  const requiredSubDirs = [
+    path.join(targetDir, 'docs', 'modules'),
+    path.join(targetDir, 'images'),
+    path.join(targetDir, 'bug_files'),
+    path.join(targetDir, 'sticky_notes'),
+    path.join(targetDir, 'templates'),
+    path.join(targetDir, 'schemas'),
+    path.join(targetDir, 'backups')
+  ];
+
+  for (const subDir of requiredSubDirs) {
+    if (!fs.existsSync(subDir)) {
+      fs.mkdirSync(subDir, { recursive: true });
+    }
+  }
+}
+
 /**
  * Sanitize a slug to only allow safe alphanumeric characters and hyphens.
  * Prevents directory traversal attacks via crafted slugs.
@@ -16,34 +65,72 @@ export function sanitizeSlug(input: string): string {
 }
 
 /**
+ * Reset cached data dir (useful for unit tests changing environment variables).
+ */
+export function resetCachedDataDir(): void {
+  cachedDataDir = null;
+}
+
+/**
  * Get the resolved absolute path to the persistent DATA_DIR.
- * Auto-detects data_docs_tooldev if running in the standard repository structure.
+ * Auto-detects data_docs_tooldev or custom local folder configured via DATA_DIR.
  */
 export function getDataDir(): string {
-  if (process.env.DATA_DIR) {
-    const customPath = path.resolve(process.env.DATA_DIR);
-    fs.mkdirSync(customPath, { recursive: true });
-    return customPath;
+  if (cachedDataDir && fs.existsSync(cachedDataDir)) {
+    return cachedDataDir;
   }
 
-  // Look for data_docs_tooldev sibling to devtoolkit
+  const projectRoot = getProjectRoot();
+
+  // 1. Explicit environment variable DATA_DIR
+  if (process.env.DATA_DIR && process.env.DATA_DIR.trim()) {
+    const rawPath = process.env.DATA_DIR.trim();
+    let targetDir: string;
+
+    if (path.isAbsolute(rawPath)) {
+      targetDir = path.resolve(rawPath);
+    } else {
+      // Relative path: resolve relative to projectRoot first if it exists there,
+      // or check process.cwd(), fallback to projectRoot
+      const rootCandidate = path.resolve(projectRoot, rawPath);
+      const cwdCandidate = path.resolve(process.cwd(), rawPath);
+
+      if (fs.existsSync(rootCandidate)) {
+        targetDir = rootCandidate;
+      } else if (fs.existsSync(cwdCandidate)) {
+        targetDir = cwdCandidate;
+      } else {
+        targetDir = rootCandidate;
+      }
+    }
+
+    ensureDataStructure(targetDir);
+    cachedDataDir = targetDir;
+    return targetDir;
+  }
+
+  // 2. Candidate paths in standard directory structure
   const candidatePaths = [
-    path.resolve(process.cwd(), '../data_docs_tooldev'),
-    path.resolve(__dirname, '../../../../data_docs_tooldev'),
-    path.resolve(__dirname, '../../../data_docs_tooldev'),
+    path.join(projectRoot, 'data_docs_tooldev'),
     path.resolve(process.cwd(), 'data_docs_tooldev'),
+    path.resolve(process.cwd(), '../data_docs_tooldev'),
+    path.resolve(process.cwd(), '../../data_docs_tooldev'),
+    path.join(projectRoot, 'data'),
     path.resolve(process.cwd(), 'data')
   ];
 
   for (const candidate of candidatePaths) {
     if (fs.existsSync(candidate)) {
+      ensureDataStructure(candidate);
+      cachedDataDir = candidate;
       return candidate;
     }
   }
 
-  // Default fallback: create sibling data_docs_tooldev or local data
-  const defaultDir = path.resolve(process.cwd(), '../data_docs_tooldev');
-  fs.mkdirSync(defaultDir, { recursive: true });
+  // 3. Default fallback: create data_docs_tooldev at projectRoot
+  const defaultDir = path.join(projectRoot, 'data_docs_tooldev');
+  ensureDataStructure(defaultDir);
+  cachedDataDir = defaultDir;
   return defaultDir;
 }
 
@@ -55,7 +142,11 @@ export function assertPathInside(baseDir: string, targetPath: string): void {
   const resolvedBase = path.resolve(baseDir);
   const resolvedTarget = path.resolve(targetPath);
 
-  if (!resolvedTarget.startsWith(resolvedBase + path.sep) && resolvedTarget !== resolvedBase) {
+  const normBase = process.platform === 'win32' ? resolvedBase.toLowerCase() : resolvedBase;
+  const normTarget = process.platform === 'win32' ? resolvedTarget.toLowerCase() : resolvedTarget;
+  const sep = process.platform === 'win32' ? path.sep.toLowerCase() : path.sep;
+
+  if (!normTarget.startsWith(normBase + sep) && normTarget !== normBase) {
     throw new Error('Security Error: Path traversal attempt detected');
   }
 }

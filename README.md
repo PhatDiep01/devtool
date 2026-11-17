@@ -29,7 +29,7 @@ d:\Source\docs_tooldev\
 │   ├── scripts/                 # Batch automation scripts (start-all.bat, start-backend.bat, start-tunnel.bat)
 │   └── templates/               # Mẫu bàn giao kỹ thuật chuẩn (screen-template.md, example-survey-management.md)
 │
-└── data_docs_tooldev/           # PERSISTENT DATA REPOSITORY (Dữ liệu lưu trữ độc lập an toàn)
+└── data_docs_tooldev/           # PERSISTENT DATA REPOSITORY (Lưu trữ cục bộ độc lập, ignored khỏi Git)
     ├── devtoolkit.db            # Cơ sở dữ liệu SQLite3 (WAL mode, FTS5 full-text index)
     ├── docs/
     │   └── modules/             # File markdown gốc phân loại theo Domain/Module
@@ -41,6 +41,8 @@ d:\Source\docs_tooldev\
     ├── backups/                 # Bản sao lưu định kỳ database & tài liệu
     └── templates/               # Kho template phiên bản hóa
 ```
+
+> 🔒 **Bảo mật & Lưu trữ cục bộ**: Thư mục `data_docs_tooldev/` được cấu hình trong `.gitignore` để không bao giờ bị commit hoặc push lên Git. Người dùng có thể tùy chỉnh đường dẫn lưu trữ bất kỳ trên máy thông qua biến môi trường `DATA_DIR` trong file `.env` (ví dụ: `DATA_DIR=./data_docs_tooldev` hoặc đường dẫn tuyệt đối `DATA_DIR=D:/Source/docs_tooldev/data_docs_tooldev`).
 
 ---
 

@@ -29,9 +29,10 @@ backend/service-stderr.log
 *.sqlite
 *.sqlite3
 
-# Backend uploads
-backend/data/images/*
-!backend/data/images/.gitkeep
+# Local Persistent Data
+data_docs_tooldev/
+data/
+backend/data/
 
 # Frontend & Caches
 frontend/.firebase/

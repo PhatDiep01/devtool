@@ -6,7 +6,16 @@ import path from 'path';
 import fs from 'fs';
 import dotenv from 'dotenv';
 
-dotenv.config();
+// Load root .env first, then backend .env to allow fine-grained local overrides
+const rootEnvPath = path.resolve(__dirname, '../../../.env');
+if (fs.existsSync(rootEnvPath)) {
+  dotenv.config({ path: rootEnvPath });
+}
+const backendEnvPath = path.resolve(__dirname, '../.env');
+if (fs.existsSync(backendEnvPath)) {
+  dotenv.config({ path: backendEnvPath });
+}
+dotenv.config(); // fallback to cwd .env
 
 import { getDb, closeDb } from './db/sqlite';
 import { authMiddleware } from './middleware/auth';

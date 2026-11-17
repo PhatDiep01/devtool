@@ -204,8 +204,11 @@ export const SettingsPage: React.FC = () => {
               </div>
               <div>
                 <h3 className="font-bold text-base text-foreground">Local Storage Metrics</h3>
-                <p className="text-xs text-muted-foreground">
-                  Thống kê tệp lưu trữ persistent dưới thư mục <code className="font-mono text-[11px] bg-accent px-1.5 py-0.5 rounded">data_docs_tooldev</code>
+                <p className="text-xs text-muted-foreground flex items-center gap-1.5 flex-wrap">
+                  <span>Thư mục lưu trữ cục bộ:</span>
+                  <code className="font-mono text-[11px] bg-accent px-1.5 py-0.5 rounded text-primary font-semibold break-all" title={storageStats.dataDir}>
+                    {storageStats.dataDir || 'data_docs_tooldev'}
+                  </code>
                 </p>
               </div>
             </div>
